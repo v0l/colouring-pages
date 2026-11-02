@@ -70,6 +70,7 @@ pub struct App {
     thumbs: HashMap<String, TextureHandle>,
     removing: Option<String>,
     level: f32,
+    auto_hold: Option<(Option<Instant>, f32)>,
 }
 
 impl App {
@@ -103,6 +104,7 @@ impl App {
             thumbs: HashMap::new(),
             removing: None,
             level: 0.0,
+            auto_hold: std::env::var("COLOURING_AUTOHOLD").ok().and_then(|v| v.parse().ok()).map(|secs| (None, secs)),
         };
         app.apply_env(&cc.egui_ctx);
         app
@@ -467,7 +469,18 @@ impl App {
         let reading = self.voice.reading();
         let id = egui::Id::unique("mic");
         let resp = ui.interact(rect, id, Sense::click_and_drag());
-        let down = resp.is_pointer_button_down_on();
+        let mut down = resp.is_pointer_button_down_on();
+        if let Some((since, secs)) = &mut self.auto_hold {
+            if *secs > 0.0 {
+                let t = *since.get_or_insert_with(Instant::now);
+                if t.elapsed().as_secs_f32() < *secs {
+                    down = true;
+                } else {
+                    *secs = 0.0;
+                }
+                ctx.request_repaint();
+            }
+        }
         if down && !self.voice.busy() && !self.running {
             if let Err(e) = self.voice.start() {
                 self.say(false, e);

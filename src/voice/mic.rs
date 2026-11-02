@@ -16,7 +16,7 @@ pub enum Said {
 }
 
 struct Take {
-    _stream: cpal::Stream,
+    _stream: Option<cpal::Stream>,
     heard: Arc<Mutex<Vec<f32>>>,
     peak: Arc<AtomicU32>,
     rate: u32,
@@ -220,7 +220,31 @@ pub fn read_on_server(settings: &Settings, pcm: &[f32]) -> Result<String, String
         .transcribe(pcm, &settings.server_model)
 }
 
+pub fn clip_path() -> std::path::PathBuf {
+    crate::settings::data_dir().join("fake-mic.wav")
+}
+
+fn open_clip(path: &std::path::Path) -> Result<Take, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (pcm, rate) = egui_bench::voice::read_wav(&bytes)?;
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let peak = Arc::new(AtomicU32::new(0));
+    let (h, p) = (heard.clone(), peak.clone());
+    std::thread::spawn(move || {
+        let step = (rate as usize / 50).max(1);
+        for chunk in pcm.chunks(step) {
+            push(chunk, 1, usize::MAX, &h, &p);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+    Ok(Take { _stream: None, heard, peak, rate, since: Instant::now() })
+}
+
 fn open() -> Result<Take, String> {
+    let clip = clip_path();
+    if clip.exists() {
+        return open_clip(&clip);
+    }
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -254,7 +278,7 @@ fn open() -> Result<Take, String> {
     }
     .map_err(|e| format!("{name}: {e}"))?;
     stream.play().map_err(|e| format!("{name}: {e}"))?;
-    Ok(Take { _stream: stream, heard, peak, rate, since: Instant::now() })
+    Ok(Take { _stream: Some(stream), heard, peak, rate, since: Instant::now() })
 }
 
 fn push<T: cpal::SizedSample>(
@@ -305,6 +329,21 @@ mod tests {
         assert_eq!(seen.path, "/v1/audio/transcriptions");
         assert!(seen.headers.contains("authorization: bearer k"));
         assert!(seen.text().contains("whisper-large") && seen.text().contains("RIFF"));
+    }
+
+    #[test]
+    fn a_clip_file_is_fed_in_as_a_take_at_its_own_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.wav");
+        let tone: Vec<f32> = (0..8000).map(|i| 0.4 * (i as f32 * 0.05).sin()).collect();
+        std::fs::write(&path, egui_bench::voice::wav_bytes(&tone, 16_000)).unwrap();
+        let take = open_clip(&path).unwrap();
+        assert_eq!(take.rate, 16_000);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let heard = take.heard.lock().unwrap().len();
+        assert_eq!(heard, 8000);
+        assert!(f32::from_bits(take.peak.load(Ordering::Relaxed)) > 0.3);
+        assert!(open_clip(&dir.path().join("none.wav")).is_err());
     }
 
     #[test]
