@@ -13,6 +13,7 @@ pub mod plan;
 pub mod settings;
 pub mod store;
 pub mod style;
+pub mod system;
 pub mod voice;
 
 #[cfg(not(target_os = "android"))]

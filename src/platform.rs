@@ -13,7 +13,7 @@ mod android {
         ACTIVITY.store(raw as usize, std::sync::atomic::Ordering::Release);
     }
 
-    fn with_activity<R>(
+    pub fn with_activity<R>(
         f: impl for<'j> FnOnce(&mut Env<'j>, &JObject<'j>) -> jni::errors::Result<R>,
     ) -> Result<R, String> {
         let ctx = ndk_context::android_context();
@@ -90,7 +90,7 @@ mod android {
 
 #[cfg(target_os = "android")]
 pub use android::{
-    ask_for_microphone, microphone_allowed, print_pdf, remember_activity, save_download,
+    with_activity, ask_for_microphone, microphone_allowed, print_pdf, remember_activity, save_download,
 };
 
 #[cfg(not(target_os = "android"))]

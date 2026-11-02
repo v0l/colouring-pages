@@ -459,8 +459,9 @@ impl App {
     fn home(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         let avail = ui.available_rect_before_wrap();
-        let d = (avail.height() * 0.42).clamp(150.0, 300.0).min(avail.width() * 0.8);
-        let centre = pos2(avail.center().x, avail.top() + avail.height() * 0.1 + d / 2.0 + 10.0);
+        let d = (avail.height() * 0.42).clamp(110.0, 300.0).min(avail.width() * 0.8);
+        let lead = (avail.height() * 0.1).min(40.0);
+        let centre = pos2(avail.center().x, avail.top() + lead + d / 2.0 + 10.0);
         let rect = Rect::from_center_size(centre, vec2(d, d));
         let listening = self.voice.listening();
         let reading = self.voice.reading();
@@ -500,7 +501,7 @@ impl App {
         } else {
             "hold and say what you want to colour".to_string()
         };
-        let below = avail.top() + avail.height() * 0.1 + d + 40.0;
+        let below = avail.top() + lead + d + 40.0;
         let cap_rect = Rect::from_min_size(pos2(avail.left(), below), vec2(avail.width(), 30.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(cap_rect), |ui| {
             ui.vertical_centered(|ui| {
@@ -804,10 +805,35 @@ fn settings_form(ui: &mut Ui, s: &mut Settings) {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if !cfg!(target_os = "android") {
+            return;
+        }
+        let keyboard = crate::system::keyboard_height(ctx);
+        let bottom = keyboard.max(crate::system::bottom_inset(ctx));
+        raw.safe_area_insets = Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
+            left: 0.0,
+            right: 0.0,
+            top: crate::system::top_inset(ctx),
+            bottom,
+        }));
+        if keyboard > 0.0 || ctx.egui_wants_keyboard_input() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
         let above = ctx.content_rect().top() - ctx.viewport_rect().top();
+        let below = ctx.viewport_rect().bottom() - ctx.content_rect().bottom();
+        if below > 0.0 {
+            egui::Panel::bottom("system-bottom")
+                .exact_size(below)
+                .resizable(false)
+                .frame(egui::Frame::NONE.fill(CHASSIS))
+                .show(ui, |_| {});
+        }
         egui::Panel::top("header")
             .frame(egui::Frame::NONE.fill(CHASSIS).inner_margin(egui::Margin {
                 left: 14,
