@@ -1,0 +1,79 @@
+[package]
+name = "colouring-pages"
+description = "Say what you want to colour in and get printable colouring pages"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[features]
+default = ["local-speech"]
+local-speech = ["egui_bench/speech"]
+
+[[bin]]
+name = "colouring-pages"
+path = "src/main.rs"
+
+[dependencies]
+egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+egui_bench = "0.9.4"
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.23"
+async-trait = "0.1"
+flate2 = "1.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "multipart", "rustls-no-provider", "http2", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+cpal = "0.18"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+dirs = "6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["wayland", "x11"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["android-native-activity"] }
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.14"
+log = "0.4"
+jni = "0.22"
+ndk-context = "0.1"
+
+[package.metadata.android]
+package = "io.v0l.colouringpages"
+apk_name = "colouring-pages"
+resources = "android/res"
+build_targets = ["aarch64-linux-android", "x86_64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 34
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
+[package.metadata.android.application]
+label = "Colouring Pages"
+icon = "@mipmap/ic_launcher"
+uses_cleartext_traffic = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "thin"
