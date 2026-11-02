@@ -1,4 +1,4 @@
-pub const STYLE_SUFFIX: &str = "black and white line art colouring page for children, thick clean outlines, no shading, no grey, no filled black areas, pure white background, large closed regions that are easy to colour in, cute, simple, no text, no letters";
+pub const STYLE_SUFFIX: &str = "black and white line art colouring page for children, thick clean outlines, no shading, no grey, no filled black areas, pure white background, large closed regions that are easy to colour in, cute, simple, one main subject that fills the page, no text, no letters";
 
 pub const NEGATIVE: &str = "shading, grey, gray, gradient, colour, color, filled black areas, texture, hatching, crosshatch, tiny details, text, letters, numbers, watermark, signature, photo, realistic";
 

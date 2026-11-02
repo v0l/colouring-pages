@@ -153,13 +153,39 @@ pub fn fit(clean: &GrayImage, paper: Paper) -> GrayImage {
     page
 }
 
+pub const MIN_INK: f32 = 0.004;
+const CROP_PAD: f32 = 0.04;
+
+pub fn autocrop(img: &GrayImage) -> GrayImage {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    for (x, y, p) in img.enumerate_pixels() {
+        if p.0[0] == 0 {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+    }
+    if x0 == u32::MAX {
+        return img.clone();
+    }
+    let pad = (CROP_PAD * img.width().max(img.height()) as f32) as u32;
+    let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
+    let (x1, y1) = ((x1 + pad).min(img.width() - 1), (y1 + pad).min(img.height() - 1));
+    image::imageops::crop_imm(img, x0, y0, x1 - x0 + 1, y1 - y0 + 1).to_image()
+}
+
 pub fn make_page(png: &[u8], paper: Paper) -> Result<GrayImage, String> {
     let decoded = image::load_from_memory(png).map_err(|e| format!("the picture could not be read: {e}"))?;
     let gray = decoded.to_luma8();
     if gray.width() < 8 || gray.height() < 8 {
         return Err("the picture was too small".into());
     }
-    Ok(fit(&clean(&gray), paper))
+    let cleaned = clean(&gray);
+    if ink_ratio(&cleaned) < MIN_INK {
+        return Err("the page came out empty".into());
+    }
+    Ok(fit(&autocrop(&cleaned), paper))
 }
 
 pub fn is_black_and_white(img: &GrayImage) -> bool {
@@ -303,6 +329,43 @@ mod tests {
     fn a_blank_page_stays_blank() {
         let out = clean(&GrayImage::from_pixel(100, 100, Luma([250])));
         assert!(out.pixels().all(|p| p.0[0] == 255));
+    }
+
+    #[test]
+    fn a_page_with_only_specks_is_rejected_as_empty() {
+        let mut img = GrayImage::from_pixel(900, 1200, Luma([240]));
+        for (cx, cy) in [(700, 100), (760, 110)] {
+            for dx in 0..6 {
+                for dy in 0..6 {
+                    img.put_pixel(cx + dx, cy + dy, Luma([10]));
+                }
+            }
+        }
+        let png = encode_png(&img).unwrap();
+        assert_eq!(make_page(&png, Paper::A4).unwrap_err(), "the page came out empty");
+    }
+
+    #[test]
+    fn a_small_drawing_in_a_corner_is_scaled_up_to_fill_the_page() {
+        let mut img = GrayImage::from_pixel(900, 1200, Luma([240]));
+        for x in 50..350u32 {
+            for y in 900..1100u32 {
+                let edge = x < 62 || x > 338 || y < 912 || y > 1088;
+                if edge {
+                    img.put_pixel(x, y, Luma([10]));
+                }
+            }
+        }
+        let page = make_page(&encode_png(&img).unwrap(), Paper::A4).unwrap();
+        let (mut minx, mut maxx) = (u32::MAX, 0);
+        for (x, _, p) in page.enumerate_pixels() {
+            if p.0[0] == 0 {
+                minx = minx.min(x);
+                maxx = maxx.max(x);
+            }
+        }
+        assert!(maxx - minx > page.width() * 6 / 10, "{minx}..{maxx}");
+        assert!(is_black_and_white(&page));
     }
 
     #[test]

@@ -4,6 +4,10 @@ mod openrouter;
 pub use comfy::Comfy;
 pub use openrouter::OpenRouter;
 
+pub fn openrouter_default_model() -> &'static str {
+    openrouter::DEFAULT_MODEL
+}
+
 use async_trait::async_trait;
 
 #[derive(Clone, Debug, PartialEq)]

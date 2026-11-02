@@ -38,6 +38,25 @@ pub async fn draw_page(
     make_page(&png, paper)
 }
 
+const EMPTY_PAGE: &str = "the page came out empty";
+const TRIES: u64 = 3;
+
+async fn draw_page_retrying(
+    backend: &dyn ImageBackend,
+    prompt: &str,
+    paper: Paper,
+    seed: u64,
+) -> Result<GrayImage, String> {
+    let mut last = String::new();
+    for attempt in 0..TRIES {
+        match draw_page(backend, prompt, paper, seed + attempt * 7919).await {
+            Err(e) if e == EMPTY_PAGE => last = e,
+            other => return other,
+        }
+    }
+    Err(last)
+}
+
 pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request: String, sink: Sink) {
     sink(Event::Planning);
     let plan = match make_plan(&llm, &request).await {
@@ -53,7 +72,7 @@ pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request
     for (i, prompt) in prompts.into_iter().enumerate() {
         let (backend, sink) = (backend.clone(), sink.clone());
         tasks.push(tokio::spawn(async move {
-            match draw_page(&*backend, &prompt, paper, base + i as u64).await {
+            match draw_page_retrying(&*backend, &prompt, paper, base + i as u64).await {
                 Ok(page) => sink(Event::Page(i, page)),
                 Err(e) => sink(Event::PageFailed(i, e)),
             }
@@ -67,7 +86,7 @@ pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request
 
 pub async fn redraw(backend: Arc<dyn ImageBackend>, paper: Paper, index: usize, prompt: String, sink: Sink) {
     let seed = net::random_seed(net::unix_seconds() ^ (index as u64 + 1));
-    match draw_page(&*backend, &prompt, paper, seed).await {
+    match draw_page_retrying(&*backend, &prompt, paper, seed).await {
         Ok(page) => sink(Event::Page(index, page)),
         Err(e) => sink(Event::PageFailed(index, e)),
     }
@@ -184,6 +203,42 @@ mod tests {
         let (sink, log) = collect();
         net::runtime().block_on(run(llm, backend, Paper::A4, "cats".into(), sink));
         assert!(matches!(log.lock().unwrap().last(), Some(Event::Failed(_))));
+    }
+
+    struct BlankFirst {
+        jobs: Mutex<Vec<Job>>,
+    }
+
+    #[async_trait]
+    impl ImageBackend for BlankFirst {
+        fn name(&self) -> &'static str {
+            "blank-first"
+        }
+
+        async fn generate(&self, job: &Job) -> Result<Vec<u8>, String> {
+            let n = {
+                let mut jobs = self.jobs.lock().unwrap();
+                jobs.push(job.clone());
+                jobs.len()
+            };
+            let img = GrayImage::from_fn(job.width / 4, job.height / 4, |x, y| {
+                let d = (((x as f32 - 100.0).powi(2) + (y as f32 - 140.0).powi(2)).sqrt() - 60.0).abs();
+                image::Luma([if n > 1 && d < 3.0 { 40 } else { 230 }])
+            });
+            crate::clean::encode_png(&img)
+        }
+    }
+
+    #[test]
+    fn an_empty_page_is_drawn_again_with_a_new_seed() {
+        let backend = BlankFirst { jobs: Mutex::new(Vec::new()) };
+        let page = net::runtime()
+            .block_on(draw_page_retrying(&backend, &style::finish("a cat"), Paper::A4, 10))
+            .unwrap();
+        assert!(crate::clean::ink_ratio(&page) > 0.001);
+        let jobs = backend.jobs.lock().unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_ne!(jobs[0].seed, jobs[1].seed);
     }
 
     #[test]
