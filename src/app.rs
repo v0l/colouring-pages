@@ -112,6 +112,11 @@ impl App {
         match std::env::var("COLOURING_SHOW").as_deref() {
             Ok("settings") => self.draft = Some(self.settings.clone()),
             Ok("gallery") => self.open_gallery(ctx),
+            Ok("results") => {
+                if let Some(entry) = self.store.list().first().cloned() {
+                    self.open_set(ctx, &entry);
+                }
+            }
             _ => {}
         }
         if let Ok(text) = std::env::var("COLOURING_AUTORUN") {
@@ -401,7 +406,7 @@ fn paint_mic(p: &egui::Painter, c: Pos2, r: f32, ink: Color32) {
 impl App {
     fn header(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        ui.horizontal(|ui| {
+        ui.horizontal_centered(|ui| {
             ui.label(egui::RichText::new("COLOURING PAGES").font(legend_font(18.0)).color(VALUE).extra_letter_spacing(3.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (rect, _) = ui.allocate_exact_size(vec2(130.0, 40.0), Sense::hover());
@@ -436,7 +441,12 @@ impl App {
         };
         let f = (held / HOLD_TO_OPEN).clamp(0.0, 1.0);
         let label = if down { "keep holding" } else { "parents" };
-        egui_bench::prelude::busy(ui, rect, Some(f), label, if down { READOUT } else { LEGEND });
+        big_button(ui, rect, label, if down { READOUT } else { LEGEND }, false, true);
+        if down {
+            let mut fill = rect;
+            fill.set_width(rect.width() * f);
+            ui.painter().rect_filled(fill, 2.0, READOUT.gamma_multiply(0.3));
+        }
         if down {
             ui.ctx().request_repaint();
         }
@@ -500,7 +510,7 @@ impl App {
         let w = avail.width().min(620.0);
         let field_rect = Rect::from_min_size(pos2(avail.center().x - w / 2.0, below + 50.0), vec2(w, 44.0));
         let mut go = false;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(field_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(field_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             let r = field_then(ui, &mut self.request, "or type it here", 120.0, |ui| {
                 go = ui.add(Key::new("draw").solid(READOUT).min_width(100.0)).clicked();
             });
