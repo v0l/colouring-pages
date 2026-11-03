@@ -593,8 +593,9 @@ impl App {
                 p.rect_stroke(page, 2.0, Stroke::new(1.0, FAULT), egui::StrokeKind::Inside);
                 let job = egui_bench::text::caps("could not draw this one", legend_font(13.0), FAULT, 1.0);
                 let g = egui_bench::text::lay(ui, job, page.width() - 24.0);
-                ui.painter().galley(page.center() - g.size() / 2.0 - vec2(0.0, 20.0), g, FAULT);
-                let _ = why;
+                ui.painter().galley(page.center() - g.size() / 2.0 - vec2(0.0, 40.0), g, FAULT);
+                let reason = egui_bench::text::lay(ui, egui_bench::text::caps(why, legend_font(11.0), LEGEND, 0.5), page.width() - 24.0);
+                ui.painter().galley(pos2(page.left() + 12.0, page.center().y), reason, LEGEND);
             }
             Slot::Empty => {}
         }
