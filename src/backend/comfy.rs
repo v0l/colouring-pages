@@ -25,7 +25,11 @@ impl Comfy {
     }
 
     pub fn workflow(&self, job: &Job) -> Value {
-        json!({
+        self.workflow_from(job, None)
+    }
+
+    pub fn workflow_from(&self, job: &Job, uploaded: Option<&str>) -> Value {
+        let mut w = json!({
             "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-dev.safetensors", "weight_dtype": "fp8_e4m3fn"}},
             "2": {"class_type": "DualCLIPLoader", "inputs": {"clip_name1": "t5xxl_fp8_e4m3fn.safetensors", "clip_name2": "clip_l.safetensors", "type": "flux"}},
             "3": {"class_type": "VAELoader", "inputs": {"vae_name": "flux_ae.safetensors"}},
@@ -35,9 +39,36 @@ impl Comfy {
             "7": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "seed": job.seed, "steps": self.steps, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "positive": ["5", 0], "negative": ["5", 0], "latent_image": ["6", 0], "denoise": 1.0}},
             "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
             "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "colouring"}},
-        })
+        });
+        if let Some(name) = uploaded {
+            w["10"] = json!({"class_type": "LoadImage", "inputs": {"image": name}});
+            w["11"] = json!({"class_type": "ImageScale", "inputs": {"image": ["10", 0], "upscale_method": "lanczos", "width": job.width, "height": job.height, "crop": "center"}});
+            w["12"] = json!({"class_type": "VAEEncode", "inputs": {"pixels": ["11", 0], "vae": ["3", 0]}});
+            w["7"]["inputs"]["latent_image"] = json!(["12", 0]);
+            w["7"]["inputs"]["denoise"] = json!(REFERENCE_DENOISE);
+        }
+        w
+    }
+
+    async fn upload(&self, http: &reqwest::Client, png: &[u8], seed: u64) -> Result<String, String> {
+        let part = reqwest::multipart::Part::bytes(png.to_vec())
+            .file_name(format!("colouring-ref-{seed}.png"))
+            .mime_str("image/png")
+            .map_err(|e| e.to_string())?;
+        let form = reqwest::multipart::Form::new().part("image", part).text("overwrite", "true");
+        let resp = http
+            .post(format!("{}/upload/image", self.url))
+            .multipart(form)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .map_err(|e| format!("could not send the reference picture to ComfyUI: {e}"))?;
+        let v: Value = resp.json().await.map_err(|e| format!("ComfyUI did not take the reference picture: {e}"))?;
+        v.get("name").and_then(|n| n.as_str()).map(str::to_string).ok_or_else(|| "ComfyUI did not take the reference picture".into())
     }
 }
+
+const REFERENCE_DENOISE: f32 = 0.82;
 
 fn client_id(seed: u64) -> String {
     format!("colouring-pages-{seed}")
@@ -78,10 +109,14 @@ impl ImageBackend for Comfy {
 
     async fn generate(&self, job: &Job) -> Result<Vec<u8>, String> {
         let http = net::http();
+        let uploaded = match &job.reference {
+            Some(png) => Some(self.upload(&http, png, job.seed).await?),
+            None => None,
+        };
         let queue = format!("{}/prompt", self.url);
         let resp = http
             .post(&queue)
-            .json(&json!({ "prompt": self.workflow(job), "client_id": client_id(job.seed) }))
+            .json(&json!({ "prompt": self.workflow_from(job, uploaded.as_deref()), "client_id": client_id(job.seed) }))
             .timeout(Duration::from_secs(30))
             .send()
             .await
@@ -137,7 +172,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn job() -> Job {
-        Job { prompt: "a cat".into(), negative: "shading".into(), width: 960, height: 1280, seed: 7 }
+        Job { prompt: "a cat".into(), negative: "shading".into(), width: 960, height: 1280, seed: 7, reference: None }
     }
 
     fn quick(url: &str) -> Comfy {
@@ -180,6 +215,33 @@ mod tests {
         assert_eq!(seen[0].json()["prompt"]["4"]["inputs"]["text"], "a cat");
         assert!(seen.last().unwrap().path.contains("filename=kg_1.png"));
         assert!(seen.iter().filter(|s| s.path.starts_with("/history")).count() >= 3);
+    }
+
+    #[test]
+    fn a_reference_picture_is_uploaded_and_the_page_starts_from_it() {
+        let fake = serve(move |seen| match (seen.method.as_str(), seen.path.split('?').next().unwrap()) {
+            ("POST", "/upload/image") => Reply::json(json!({"name": "colouring-ref-7.png", "subfolder": "", "type": "input"})),
+            ("POST", "/prompt") => Reply::json(json!({"prompt_id": "abc"})),
+            ("GET", "/history/abc") => Reply::json(json!({"abc": {"outputs": {"9": {"images": [{"filename": "kg_1.png"}]}}}})),
+            ("GET", "/view") => Reply::bytes("image/png", b"PNGDATA".to_vec()),
+            _ => Reply::status(404, "no"),
+        });
+        let job = Job { reference: Some(std::sync::Arc::new(b"REFPNG".to_vec())), ..job() };
+        assert_eq!(net::runtime().block_on(quick(&fake.url).generate(&job)).unwrap(), b"PNGDATA");
+        let seen = fake.requests();
+        assert_eq!(seen[0].path, "/upload/image");
+        assert!(seen[0].text().contains("REFPNG"));
+        let w = &seen[1].json()["prompt"];
+        assert_eq!(w["10"]["inputs"]["image"], "colouring-ref-7.png");
+        assert_eq!(w["7"]["inputs"]["latent_image"], json!(["12", 0]));
+        assert!(w["7"]["inputs"]["denoise"].as_f64().unwrap() < 1.0);
+    }
+
+    #[test]
+    fn without_a_reference_nothing_is_uploaded() {
+        let w = Comfy::new("x").workflow(&job());
+        assert!(w.get("10").is_none());
+        assert_eq!(w["7"]["inputs"]["denoise"], 1.0);
     }
 
     #[test]

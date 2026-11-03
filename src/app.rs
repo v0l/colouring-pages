@@ -26,6 +26,7 @@ pub enum Screen {
 
 enum Msg {
     Notice(bool, String),
+    Picked(Result<Vec<u8>, String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -69,6 +70,15 @@ pub struct App {
     removing: Option<String>,
     level: f32,
     auto_hold: Option<(Option<Instant>, f32)>,
+    reference: Option<(Arc<Vec<u8>>, TextureHandle)>,
+}
+
+pub fn reference_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(bytes).map_err(|e| format!("that picture could not be read: {e}"))?;
+    let img = if img.width().max(img.height()) > 1024 { img.thumbnail(1024, 1024) } else { img };
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.to_rgb8().write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
 }
 
 impl App {
@@ -107,6 +117,7 @@ impl App {
             removing: None,
             level: 0.0,
             auto_hold: None,
+            reference: None,
         }
     }
 
@@ -120,6 +131,12 @@ impl App {
                 }
             }
             _ => {}
+        }
+        if let Ok(path) = std::env::var("COLOURING_REFERENCE") {
+            match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| reference_png(&b)) {
+                Ok(png) => self.use_reference(ctx, png),
+                Err(e) => self.say(false, e),
+            }
         }
         if let Ok(text) = std::env::var("COLOURING_AUTORUN") {
             if !text.trim().is_empty() {
@@ -172,10 +189,27 @@ impl App {
             self.say(false, problem);
             return;
         }
-        match self.jobs.start(self.settings.llm(), self.backend(), self.settings.paper(), request) {
+        let reference = self.reference.take().map(|(png, _)| png);
+        match self.jobs.start(self.settings.llm(), self.backend(), self.settings.paper(), request, reference) {
             Ok(id) => self.show_job(ctx, id),
             Err(e) => self.say(false, format!("could not keep these pages: {e}")),
         }
+    }
+
+    pub fn use_reference(&mut self, ctx: &egui::Context, png: Vec<u8>) {
+        let Ok(img) = image::load_from_memory(&png) else { return };
+        let tex = Self::texture(ctx, "reference", &img.to_luma8(), 160);
+        self.reference = Some((Arc::new(png), tex));
+    }
+
+    fn pick_reference(&self, ctx: &egui::Context) {
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        crate::platform::pick_picture(move |picked| {
+            let Some(path) = picked else { return };
+            let read = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| reference_png(&b));
+            let _ = tx.send(Msg::Picked(read));
+            ctx.request_repaint();
+        });
     }
 
     fn show_job(&mut self, ctx: &egui::Context, id: String) {
@@ -277,8 +311,12 @@ impl App {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok(Msg::Notice(ok, text)) = self.rx.try_recv() {
-            self.say(ok, text);
+        while let Ok(msg) = self.rx.try_recv() {
+            match msg {
+                Msg::Notice(ok, text) => self.say(ok, text),
+                Msg::Picked(Ok(png)) => self.use_reference(ctx, png),
+                Msg::Picked(Err(e)) => self.say(false, e),
+            }
         }
         for said in self.voice.poll() {
             match said {
@@ -882,6 +920,41 @@ impl App {
             let text = self.request.clone();
             self.start(&ctx, text);
         }
+        self.reference_row(ui, &ctx, pos2(avail.center().x, field_rect.bottom() + 18.0));
+    }
+
+    fn reference_row(&mut self, ui: &mut Ui, ctx: &egui::Context, top: Pos2) {
+        if !crate::platform::CAN_PICK_PICTURE && self.reference.is_none() {
+            return;
+        }
+        match self.reference.clone() {
+            Some((_, tex)) => {
+                let thumb = Rect::from_min_size(pos2(top.x - 170.0, top.y), vec2(64.0, 64.0));
+                ui.painter().rect_filled(thumb, 2.0, Color32::WHITE);
+                let size = tex.size_vec2();
+                let fit = (64.0 / size.x).min(64.0 / size.y);
+                ui.painter().image(
+                    tex.id(),
+                    Rect::from_center_size(thumb.center(), size * fit),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+                ui.painter().rect_stroke(thumb, 2.0, Stroke::new(2.0, READOUT), egui::StrokeKind::Outside);
+                let text = Rect::from_min_size(pos2(thumb.right() + 14.0, top.y), vec2(150.0, 64.0));
+                let g = egui_bench::text::lay(ui, egui_bench::text::caps("drawing from this picture", legend_font(12.0), READOUT, 1.0), 150.0);
+                ui.painter().galley(pos2(text.left(), text.center().y - g.size().y / 2.0), g, READOUT);
+                let key = Rect::from_min_size(pos2(text.right() + 10.0, top.y + 12.0), vec2(110.0, 40.0));
+                if big_button(ui, key, "take off", FAULT, false, true).clicked() {
+                    self.reference = None;
+                }
+            }
+            None => {
+                let key = Rect::from_min_size(pos2(top.x - 140.0, top.y), vec2(280.0, 44.0));
+                if big_button(ui, key, "add a picture", VALUE, false, true).clicked() {
+                    self.pick_reference(ctx);
+                }
+            }
+        }
     }
 
     fn modals(&mut self, ctx: &egui::Context) {
@@ -1225,13 +1298,16 @@ mod tests {
         r.app.start(&ctx, "fish".into());
         let id = r.app.current().unwrap().id.clone();
         settle(&mut r, "the prompts", |a| a.current().is_some_and(|j| j.prompts.len() == PAGES));
-        let settings = r.app.settings.clone();
+        let fresh = Gate::shut();
+        let painter = painter(fresh.clone());
+        let mut settings = r.app.settings.clone();
+        settings.openrouter_url = painter.url.clone();
         r.app = App::with(&ctx, settings, r.store.clone());
         r.app.open_gallery(&ctx);
         frame(&mut r);
         let entry = r.app.gallery().iter().find(|e| e.meta.id == id).cloned().unwrap();
         assert_eq!(entry.meta.status, Status::Interrupted);
-        r.gate.open();
+        fresh.open();
         r.app.retry(&ctx, &id);
         settle(&mut r, "the retry to finish", |a| {
             a.gallery().iter().any(|e| e.meta.id == id && e.meta.status == Status::Done)
@@ -1257,6 +1333,32 @@ mod tests {
         frame_with(&mut r, vec![button(false)]);
         assert_eq!(r.app.screen(), Screen::Home);
         assert!(r.app.request.is_empty());
+    }
+
+    #[test]
+    fn a_picked_reference_picture_goes_to_the_image_model_and_is_used_once() {
+        let mut r = rig();
+        let ctx = r.ctx.clone();
+        r.gate.open();
+        let photo = GrayImage::from_fn(2400, 1800, |x, _| image::Luma([(x % 255) as u8]));
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageLuma8(photo).write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let png = reference_png(jpeg.get_ref()).unwrap();
+        let small = image::load_from_memory(&png).unwrap();
+        assert!(small.width() <= 1024 && small.height() <= 1024);
+        r.app.use_reference(&ctx, png.clone());
+        r.app.start(&ctx, "my dog".into());
+        assert!(r.app.reference.is_none());
+        settle(&mut r, "every page", |a| a.current().is_some_and(|j| !j.running()));
+        let drawn: Vec<_> = r._painter.requests().into_iter().filter(|s| s.text().contains("modalities")).collect();
+        assert_eq!(drawn.len(), PAGES);
+        let sent = base64::engine::general_purpose::STANDARD.encode(&png);
+        assert!(drawn.iter().all(|s| s.text().contains(&sent)));
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_picture_is_turned_down() {
+        assert!(reference_png(b"not a picture").unwrap_err().contains("could not be read"));
     }
 
     #[test]

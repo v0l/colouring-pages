@@ -2,7 +2,7 @@ use crate::backend::ImageBackend;
 use crate::clean::{self, Paper};
 use crate::llm::Llm;
 use crate::net;
-use crate::pipeline::{self, Event, Sink};
+use crate::pipeline::{self, Event, Reference, Sink};
 use crate::plan::{PAGES, Plan};
 use crate::store::{self, Entry, Meta, Status, Store};
 use image::GrayImage;
@@ -38,6 +38,7 @@ pub struct Job {
     pub step: Step,
     pub status: Status,
     pub version: u64,
+    pub reference: Reference,
 }
 
 impl Job {
@@ -87,6 +88,7 @@ impl Job {
             step,
             status: entry.meta.status.clone(),
             version: 0,
+            reference: entry.reference(),
         }
     }
 }
@@ -139,7 +141,14 @@ impl Jobs {
         self.lock().retain(|id, job| job.running() || id == keep);
     }
 
-    pub fn start(&self, llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request: String) -> Result<String, String> {
+    pub fn start(
+        &self,
+        llm: Llm,
+        backend: Arc<dyn ImageBackend>,
+        paper: Paper,
+        request: String,
+        reference: Reference,
+    ) -> Result<String, String> {
         let made = net::unix_seconds();
         let job = Job {
             id: store::new_id(made),
@@ -152,12 +161,16 @@ impl Jobs {
             step: Step::Thinking,
             status: Status::Running,
             version: 0,
+            reference: reference.clone(),
         };
         self.store.save_meta(&job.meta())?;
+        if let Some(png) = &reference {
+            self.store.save_reference(&job.id, png)?;
+        }
         let id = job.id.clone();
         self.lock().insert(id.clone(), job);
         self.bump();
-        net::spawn(pipeline::run(llm, backend, paper, request, self.sink(&id)));
+        net::spawn(pipeline::run(llm, backend, paper, request, reference, self.sink(&id)));
         Ok(id)
     }
 
@@ -178,7 +191,7 @@ impl Jobs {
                 j.step = Step::Thinking;
                 j.pages = (0..PAGES).map(|_| Page::Pending).collect();
             });
-            net::spawn(pipeline::run(llm, backend, job.paper, job.request.clone(), self.sink(id)));
+            net::spawn(pipeline::run(llm, backend, job.paper, job.request.clone(), job.reference.clone(), self.sink(id)));
             return true;
         }
         let missing: Vec<(usize, String)> = job
@@ -192,7 +205,9 @@ impl Jobs {
     }
 
     fn draw(&self, id: &str, pages: Vec<(usize, String)>, backend: Arc<dyn ImageBackend>) -> bool {
-        let Some(paper) = self.get(id).filter(|j| !j.running()).map(|j| j.paper) else { return false };
+        let Some((paper, reference)) = self.get(id).filter(|j| !j.running()).map(|j| (j.paper, j.reference)) else {
+            return false;
+        };
         self.update(id, |j| {
             j.status = Status::Running;
             j.step = Step::Drawing;
@@ -202,7 +217,7 @@ impl Jobs {
                 }
             }
         });
-        net::spawn(pipeline::draw_pages(backend, paper, pages, self.sink(id)));
+        net::spawn(pipeline::draw_pages(backend, paper, pages, reference, self.sink(id)));
         true
     }
 
@@ -368,7 +383,7 @@ pub mod tests {
         let (_dir, store, jobs) = setup();
         let (_fake, llm) = thinker();
         let gate = Gate::shut();
-        let id = jobs.start(llm, Arc::new(Pens { gate: gate.clone(), broken: false }), Paper::A4, "cats".into()).unwrap();
+        let id = jobs.start(llm, Arc::new(Pens { gate: gate.clone(), broken: false }), Paper::A4, "cats".into(), None).unwrap();
         let entry = store.get(&id).unwrap();
         assert_eq!(entry.meta.status, Status::Running);
         assert_eq!(entry.meta.request, "cats");
@@ -381,7 +396,7 @@ pub mod tests {
         let (_dir, store, jobs) = setup();
         let (_fake, llm) = thinker();
         let gate = Gate::shut();
-        let id = jobs.start(llm, Arc::new(Pens { gate: gate.clone(), broken: false }), Paper::A4, "cats".into()).unwrap();
+        let id = jobs.start(llm, Arc::new(Pens { gate: gate.clone(), broken: false }), Paper::A4, "cats".into(), None).unwrap();
         until("the prompts", || jobs.get(&id).is_some_and(|j| j.prompts.len() == PAGES));
         assert_eq!(jobs.get(&id).unwrap().ready(), 0);
         assert_eq!(store.get(&id).unwrap().meta.prompts.len(), PAGES);
@@ -399,7 +414,7 @@ pub mod tests {
         let (_fake, llm) = thinker();
         let gate = Gate::shut();
         gate.open();
-        let id = jobs.start(llm.clone(), Arc::new(Pens { gate: gate.clone(), broken: true }), Paper::A4, "cats".into()).unwrap();
+        let id = jobs.start(llm.clone(), Arc::new(Pens { gate: gate.clone(), broken: true }), Paper::A4, "cats".into(), None).unwrap();
         until("the job to fail", || !jobs.running(&id));
         assert_eq!(store.get(&id).unwrap().meta.status, Status::Failed(NOTHING_DRAWN.into()));
         assert!(jobs.retry(&id, llm, Arc::new(Pens { gate, broken: false })));
@@ -416,7 +431,7 @@ pub mod tests {
             let jobs = Jobs::new(store.clone(), || {});
             let (_fake, llm) = thinker();
             let gate = Gate::shut();
-            let id = jobs.start(llm, Arc::new(Pens { gate, broken: false }), Paper::A4, "cats".into()).unwrap();
+            let id = jobs.start(llm, Arc::new(Pens { gate, broken: false }), Paper::A4, "cats".into(), None).unwrap();
             until("the prompts", || jobs.get(&id).is_some_and(|j| j.prompts.len() == PAGES));
             id
         };
@@ -433,10 +448,50 @@ pub mod tests {
     }
 
     #[test]
+    fn a_reference_picture_is_kept_with_the_set_and_reaches_every_drawing_and_redraw() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (_fake, llm) = thinker();
+        let jobs = Jobs::new(store.clone(), || {});
+        let pens = Arc::new(Looker { seen: seen.clone() });
+        let id = jobs.start(llm, pens.clone(), Paper::A4, "my dog".into(), Some(Arc::new(b"DOGPNG".to_vec()))).unwrap();
+        until("the job to finish", || !jobs.running(&id));
+        assert_eq!(std::fs::read(store.get(&id).unwrap().reference_path()).unwrap(), b"DOGPNG");
+        let restarted = Jobs::new(store.clone(), || {});
+        restarted.open(&store.get(&id).unwrap());
+        assert!(restarted.redraw(&id, 2, pens));
+        until("the redraw", || !restarted.running(&id));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), PAGES + 1);
+        assert!(seen.iter().all(|r| r.as_deref().map(|v| v.as_slice()) == Some(b"DOGPNG".as_slice())));
+    }
+
+    struct Looker {
+        seen: Arc<Mutex<Vec<Option<Arc<Vec<u8>>>>>>,
+    }
+
+    #[async_trait]
+    impl ImageBackend for Looker {
+        fn name(&self) -> &'static str {
+            "looker"
+        }
+
+        async fn generate(&self, job: &Draw) -> Result<Vec<u8>, String> {
+            self.seen.lock().unwrap().push(job.reference.clone());
+            let img = GrayImage::from_fn(job.width / 4, job.height / 4, |x, y| {
+                let d = (((x as f32 - 100.0).powi(2) + (y as f32 - 140.0).powi(2)).sqrt() - 60.0).abs();
+                image::Luma([if d < 3.0 { 40 } else { 230 }])
+            });
+            clean::encode_png(&img)
+        }
+    }
+
+    #[test]
     fn a_refused_request_leaves_nothing_in_my_pages() {
         let (_dir, store, jobs) = setup();
         let (_fake, llm) = thinker();
-        let id = jobs.start(llm, Arc::new(Pens { gate: Gate::shut(), broken: false }), Paper::A4, "a gun".into()).unwrap();
+        let id = jobs.start(llm, Arc::new(Pens { gate: Gate::shut(), broken: false }), Paper::A4, "a gun".into(), None).unwrap();
         until("the refusal", || !jobs.running(&id));
         assert!(matches!(jobs.get(&id).unwrap().step, Step::Refused(_)));
         assert!(store.get(&id).is_none());

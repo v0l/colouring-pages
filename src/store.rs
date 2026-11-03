@@ -36,6 +36,14 @@ impl Entry {
         self.dir.join(format!("page-{}.png", index + 1))
     }
 
+    pub fn reference_path(&self) -> PathBuf {
+        self.dir.join("reference.png")
+    }
+
+    pub fn reference(&self) -> Option<std::sync::Arc<Vec<u8>>> {
+        std::fs::read(self.reference_path()).ok().map(std::sync::Arc::new)
+    }
+
     pub fn paper(&self) -> Paper {
         Paper::from_id(&self.meta.paper)
     }
@@ -52,6 +60,18 @@ pub fn new_id(made: u64) -> String {
     format!("{made}-{n:03}-{:04x}", crate::net::random_seed(made ^ n) & 0xFFFF)
 }
 
+fn write_whole(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let draft = path.with_file_name(format!(".{name}.{}.{n}", std::process::id()));
+    std::fs::write(&draft, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&draft, path).map_err(|e| {
+        let _ = std::fs::remove_file(&draft);
+        e.to_string()
+    })
+}
+
 impl Store {
     pub fn new(root: &Path) -> Store {
         Store { root: root.join("history") }
@@ -65,13 +85,19 @@ impl Store {
         let dir = self.dir(&meta.id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let text = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join("meta.json"), text).map_err(|e| e.to_string())
+        write_whole(&dir.join("meta.json"), text.as_bytes())
     }
 
     pub fn save_page(&self, id: &str, index: usize, png: &[u8]) -> Result<(), String> {
         let dir = self.dir(id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join(format!("page-{}.png", index + 1)), png).map_err(|e| e.to_string())
+        write_whole(&dir.join(format!("page-{}.png", index + 1)), png)
+    }
+
+    pub fn save_reference(&self, id: &str, png: &[u8]) -> Result<(), String> {
+        let dir = self.dir(id);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        write_whole(&dir.join("reference.png"), png)
     }
 
     pub fn list(&self) -> Vec<Entry> {
@@ -144,6 +170,29 @@ mod tests {
         let old = r#"{"id":"old","request":"cats","made":1,"paper":"a4","plan":null,"prompts":[],"pages":4}"#;
         std::fs::write(dir.path().join("history/old/meta.json"), old).unwrap();
         assert_eq!(Store::new(dir.path()).get("old").unwrap().meta.status, Status::Done);
+    }
+
+    #[test]
+    fn a_set_being_rewritten_is_never_missing_from_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let mut long = meta("busy", 1);
+        long.prompts = vec!["x".repeat(4000); 40];
+        store.save_meta(&long).unwrap();
+        let writer = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                for _ in 0..300 {
+                    store.save_meta(&long).unwrap();
+                }
+            })
+        };
+        while !writer.is_finished() {
+            assert_eq!(store.list().len(), 1);
+        }
+        writer.join().unwrap();
+        let names: Vec<_> = std::fs::read_dir(dir.path().join("history/busy")).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names, ["meta.json"]);
     }
 
     #[test]

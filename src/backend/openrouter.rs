@@ -24,15 +24,28 @@ impl OpenRouter {
 
     pub fn request(&self, job: &Job) -> Value {
         let aspect = if job.width <= job.height { "3:4" } else { "4:3" };
+        let words = format!("Draw this image: {}", style::with_negative_inline(&job.prompt));
+        let content = match &job.reference {
+            Some(png) => json!([
+                {"type": "text", "text": format!("{words}\nUse the attached picture as a reference for what the main subject looks like, but redraw it as a clean black and white colouring page.")},
+                {"type": "image_url", "image_url": {"url": format!("data:{};base64,{}", mime(png), base64::engine::general_purpose::STANDARD.encode(png.as_slice()))}},
+            ]),
+            None => json!(words),
+        };
         json!({
             "model": self.model,
             "modalities": ["image", "text"],
             "image_config": { "aspect_ratio": aspect },
-            "messages": [{
-                "role": "user",
-                "content": format!("Draw this image: {}", style::with_negative_inline(&job.prompt)),
-            }],
+            "messages": [{ "role": "user", "content": content }],
         })
+    }
+}
+
+fn mime(bytes: &[u8]) -> &'static str {
+    match bytes {
+        [0xFF, 0xD8, ..] => "image/jpeg",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+        _ => "image/png",
     }
 }
 
@@ -95,7 +108,7 @@ mod tests {
     use crate::fake::{Reply, serve};
 
     fn job() -> Job {
-        Job { prompt: style::finish("a cat"), negative: style::NEGATIVE.into(), width: 960, height: 1280, seed: 1 }
+        Job { prompt: style::finish("a cat"), negative: style::NEGATIVE.into(), width: 960, height: 1280, seed: 1, reference: None }
     }
 
     fn data_url(bytes: &[u8]) -> String {
@@ -109,6 +122,19 @@ mod tests {
         assert_eq!(r["model"], DEFAULT_MODEL);
         let text = r["messages"][0]["content"].as_str().unwrap();
         assert!(text.contains(style::STYLE_SUFFIX) && text.contains("Do not include"));
+    }
+
+    #[test]
+    fn a_reference_picture_is_sent_inline_beside_the_words() {
+        let jpeg = vec![0xFF, 0xD8, 1, 2, 3];
+        let job = Job { reference: Some(std::sync::Arc::new(jpeg.clone())), ..job() };
+        let r = OpenRouter::new("", "k", "").request(&job);
+        let parts = r["messages"][0]["content"].as_array().unwrap();
+        assert!(parts[0]["text"].as_str().unwrap().contains("reference"));
+        let url = parts[1]["image_url"]["url"].as_str().unwrap();
+        let (head, data) = url.split_once("base64,").unwrap();
+        assert_eq!(head, "data:image/jpeg;");
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(data).unwrap(), jpeg);
     }
 
     #[test]

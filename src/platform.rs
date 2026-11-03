@@ -169,6 +169,12 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn alone() -> std::sync::MutexGuard<'static, ()> {
+        ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn script(dir: &Path, name: &str, body: &str) -> String {
         let path = dir.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -178,6 +184,7 @@ mod tests {
 
     #[test]
     fn printing_hands_the_file_to_the_print_program() {
+        let _alone = alone();
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("log");
         let lp = script(dir.path(), "lp", &format!("echo \"$@\" > {}", log.display()));
@@ -187,6 +194,7 @@ mod tests {
 
     #[test]
     fn a_named_printer_is_passed_to_lp() {
+        let _alone = alone();
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("log");
         let lp = script(dir.path(), "lp", &format!("echo \"$@\" > {}", log.display()));
@@ -196,6 +204,7 @@ mod tests {
 
     #[test]
     fn the_default_printer_wins_and_otherwise_the_first_accepting_one() {
+        let _alone = alone();
         let accepting = "Brother_DCP accepting requests since Mon 02 Nov\nOffice_Jet accepting requests since Mon\n";
         assert_eq!(pick_printer("system default destination: Office_Jet\n", accepting).as_deref(), Some("Office_Jet"));
         assert_eq!(pick_printer("no system default destination\n", accepting).as_deref(), Some("Brother_DCP"));
@@ -206,6 +215,7 @@ mod tests {
 
     #[test]
     fn a_printer_that_fails_gives_its_own_words() {
+        let _alone = alone();
         let dir = tempfile::tempdir().unwrap();
         let lp = script(dir.path(), "lp", "echo 'no default destination' >&2; exit 1");
         assert_eq!(print_with(&lp, Path::new("x.pdf")).unwrap_err(), "no default destination");
@@ -213,6 +223,25 @@ mod tests {
 
     #[test]
     fn a_missing_print_program_says_to_save_instead() {
+        let _alone = alone();
         assert!(print_with("/nonexistent/lp", Path::new("x.pdf")).unwrap_err().contains("save the PDF"));
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub fn pick_picture(done: impl FnOnce(Option<std::path::PathBuf>) + Send + 'static) {
+    std::thread::spawn(move || {
+        let picked = rfd::FileDialog::new()
+            .set_title("Pick a picture to draw from")
+            .add_filter("pictures", &["png", "jpg", "jpeg", "webp"])
+            .pick_file();
+        done(picked);
+    });
+}
+
+pub const CAN_PICK_PICTURE: bool = cfg!(any(target_os = "linux", target_os = "macos", target_os = "windows"));
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+pub fn pick_picture(done: impl FnOnce(Option<std::path::PathBuf>) + Send + 'static) {
+    done(None);
 }

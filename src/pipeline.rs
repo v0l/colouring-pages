@@ -26,14 +26,17 @@ fn aspect(paper: Paper) -> f32 {
     (w - 0.8) / (h - 0.8)
 }
 
+pub type Reference = Option<Arc<Vec<u8>>>;
+
 pub async fn draw_page(
     backend: &dyn ImageBackend,
     prompt: &str,
     paper: Paper,
     seed: u64,
+    reference: Reference,
 ) -> Result<GrayImage, String> {
     let (width, height) = generation_size(aspect(paper));
-    let job = Job { prompt: prompt.to_string(), negative: style::NEGATIVE.to_string(), width, height, seed };
+    let job = Job { prompt: prompt.to_string(), negative: style::NEGATIVE.to_string(), width, height, seed, reference };
     let png = backend.generate(&job).await?;
     make_page(&png, paper)
 }
@@ -46,10 +49,11 @@ async fn draw_page_retrying(
     prompt: &str,
     paper: Paper,
     seed: u64,
+    reference: Reference,
 ) -> Result<GrayImage, String> {
     let mut last = String::new();
     for attempt in 0..TRIES {
-        match draw_page(backend, prompt, paper, seed + attempt * 7919).await {
+        match draw_page(backend, prompt, paper, seed + attempt * 7919, reference.clone()).await {
             Err(e) if e == EMPTY_PAGE => last = e,
             other => return other,
         }
@@ -57,7 +61,7 @@ async fn draw_page_retrying(
     Err(last)
 }
 
-pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request: String, sink: Sink) {
+pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request: String, reference: Reference, sink: Sink) {
     sink(Event::Planning);
     let plan = match make_plan(&llm, &request).await {
         Ok(p) => p,
@@ -67,16 +71,22 @@ pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request
     sink(Event::Planned(plan.clone()));
     let prompts = make_prompts(&llm, &plan).await;
     sink(Event::Drawing(prompts.clone()));
-    draw_pages(backend, paper, prompts.into_iter().enumerate().collect(), sink).await;
+    draw_pages(backend, paper, prompts.into_iter().enumerate().collect(), reference, sink).await;
 }
 
-pub async fn draw_pages(backend: Arc<dyn ImageBackend>, paper: Paper, pages: Vec<(usize, String)>, sink: Sink) {
+pub async fn draw_pages(
+    backend: Arc<dyn ImageBackend>,
+    paper: Paper,
+    pages: Vec<(usize, String)>,
+    reference: Reference,
+    sink: Sink,
+) {
     let base = net::random_seed(net::unix_seconds() ^ pages.len() as u64);
     let mut tasks = Vec::new();
     for (i, prompt) in pages {
-        let (backend, sink) = (backend.clone(), sink.clone());
+        let (backend, sink, reference) = (backend.clone(), sink.clone(), reference.clone());
         tasks.push(tokio::spawn(async move {
-            match draw_page_retrying(&*backend, &prompt, paper, base + i as u64).await {
+            match draw_page_retrying(&*backend, &prompt, paper, base + i as u64, reference).await {
                 Ok(page) => sink(Event::Page(i, page)),
                 Err(e) => sink(Event::PageFailed(i, e)),
             }
@@ -89,7 +99,7 @@ pub async fn draw_pages(backend: Arc<dyn ImageBackend>, paper: Paper, pages: Vec
 }
 
 pub async fn redraw(backend: Arc<dyn ImageBackend>, paper: Paper, index: usize, prompt: String, sink: Sink) {
-    draw_pages(backend, paper, vec![(index, prompt)], sink).await;
+    draw_pages(backend, paper, vec![(index, prompt)], None, sink).await;
 }
 
 #[cfg(test)]
@@ -153,7 +163,7 @@ mod tests {
         let (_fake, llm) = llm();
         let backend = Arc::new(Grey { jobs: Mutex::new(Vec::new()), fail_on: None });
         let (sink, log) = collect();
-        net::runtime().block_on(run(llm, backend.clone(), Paper::A4, "cute christmas cats".into(), sink));
+        net::runtime().block_on(run(llm, backend.clone(), Paper::A4, "cute christmas cats".into(), None, sink));
         let events = log.lock().unwrap().clone();
         assert!(matches!(events.first(), Some(Event::Planning)));
         assert!(matches!(events.last(), Some(Event::Finished)));
@@ -177,7 +187,7 @@ mod tests {
         let (_fake, llm) = llm();
         let backend = Arc::new(Grey { jobs: Mutex::new(Vec::new()), fail_on: Some(1) });
         let (sink, log) = collect();
-        net::runtime().block_on(run(llm, backend, Paper::Letter, "cats".into(), sink));
+        net::runtime().block_on(run(llm, backend, Paper::Letter, "cats".into(), None, sink));
         let events = log.lock().unwrap().clone();
         assert_eq!(events.iter().filter(|e| matches!(e, Event::Page(..))).count(), 3);
         assert_eq!(events.iter().filter(|e| matches!(e, Event::PageFailed(_, m) if m.contains("broke"))).count(), 1);
@@ -189,7 +199,7 @@ mod tests {
         let (_fake, llm) = llm();
         let backend = Arc::new(Grey { jobs: Mutex::new(Vec::new()), fail_on: None });
         let (sink, log) = collect();
-        net::runtime().block_on(run(llm, backend.clone(), Paper::A4, "a gun".into(), sink));
+        net::runtime().block_on(run(llm, backend.clone(), Paper::A4, "a gun".into(), None, sink));
         let events = log.lock().unwrap().clone();
         assert!(matches!(events.last(), Some(Event::Refused(_))));
         assert!(backend.jobs.lock().unwrap().is_empty());
@@ -200,7 +210,7 @@ mod tests {
         let llm = Llm { url: "http://127.0.0.1:1".into(), key: String::new(), model: "m".into() };
         let backend = Arc::new(Grey { jobs: Mutex::new(Vec::new()), fail_on: None });
         let (sink, log) = collect();
-        net::runtime().block_on(run(llm, backend, Paper::A4, "cats".into(), sink));
+        net::runtime().block_on(run(llm, backend, Paper::A4, "cats".into(), None, sink));
         assert!(matches!(log.lock().unwrap().last(), Some(Event::Failed(_))));
     }
 
@@ -232,7 +242,7 @@ mod tests {
     fn an_empty_page_is_drawn_again_with_a_new_seed() {
         let backend = BlankFirst { jobs: Mutex::new(Vec::new()) };
         let page = net::runtime()
-            .block_on(draw_page_retrying(&backend, &style::finish("a cat"), Paper::A4, 10))
+            .block_on(draw_page_retrying(&backend, &style::finish("a cat"), Paper::A4, 10, None))
             .unwrap();
         assert!(crate::clean::ink_ratio(&page) > 0.001);
         let jobs = backend.jobs.lock().unwrap();
