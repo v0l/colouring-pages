@@ -229,14 +229,7 @@ fn open_clip(path: &std::path::Path) -> Result<Take, String> {
     let (pcm, rate) = egui_bench::voice::read_wav(&bytes)?;
     let heard = Arc::new(Mutex::new(Vec::new()));
     let peak = Arc::new(AtomicU32::new(0));
-    let (h, p) = (heard.clone(), peak.clone());
-    std::thread::spawn(move || {
-        let step = (rate as usize / 50).max(1);
-        for chunk in pcm.chunks(step) {
-            push(chunk, 1, usize::MAX, &h, &p);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    });
+    push(&pcm, 1, usize::MAX, &heard, &peak);
     Ok(Take { _stream: None, heard, peak, rate, since: Instant::now() })
 }
 
@@ -339,7 +332,6 @@ mod tests {
         std::fs::write(&path, egui_bench::voice::wav_bytes(&tone, 16_000)).unwrap();
         let take = open_clip(&path).unwrap();
         assert_eq!(take.rate, 16_000);
-        std::thread::sleep(std::time::Duration::from_millis(600));
         let heard = take.heard.lock().unwrap().len();
         assert_eq!(heard, 8000);
         assert!(f32::from_bits(take.peak.load(Ordering::Relaxed)) > 0.3);

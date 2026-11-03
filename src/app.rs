@@ -656,8 +656,9 @@ impl App {
             for chunk in entries.chunks(cols) {
                 ui.horizontal_top(|ui| {
                     for entry in chunk {
-                        ui.allocate_ui(vec2(cw, cw * 1.45), |ui| {
+                        ui.allocate_ui_with_layout(vec2(cw, cw * 1.2 + 74.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(cw);
+                            ui.spacing_mut().item_spacing.y = 6.0;
                             let (rect, resp) = ui.allocate_exact_size(vec2(cw, cw * 1.2), Sense::click());
                             ui.painter().rect_filled(rect, 2.0, Color32::WHITE);
                             if let Some(tex) = self.thumbs.get(&entry.meta.id) {
@@ -668,9 +669,7 @@ impl App {
                             if resp.clicked() {
                                 self.open_set(&ctx, entry);
                             }
-                            ui.horizontal(|ui| {
-                                Line::new().value(entry.meta.request.clone()).size(12.0).elided(ui);
-                            });
+                            Line::new().value(entry.meta.request.clone()).size(12.0).elided(ui);
                             if ui.add(Key::new("remove").outline(FAULT).min_width(cw)).clicked() {
                                 self.removing = Some(entry.meta.id.clone());
                             }

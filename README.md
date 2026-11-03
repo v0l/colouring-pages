@@ -65,6 +65,10 @@ ABI=x86_64 ./packaging/android/build.sh
 
 ![android](docs/android-results.png)
 
+### Testing speech without a microphone
+
+If `fake-mic.wav` exists in the data folder, the microphone key plays that clip as the take instead of opening a device, through the same path (judge, resample, transcribe). `COLOURING_AUTOHOLD=3` holds the key for 3 seconds at start, and `./shots_mic.sh DATA_DIR` runs that in headless sway. On the emulator, push the clip into the app's `files/` folder and hold the key with `adb shell input swipe X Y X Y 3000`.
+
 ### Screenshots
 
 `./shots.sh NAME WIDTH HEIGHT [ENV=VAL ...]` runs the desktop build inside a private headless sway with the lavapipe software renderer and writes `shots/NAME.png`. `COLOURING_SHOW=settings|gallery|results` opens that screen, and `COLOURING_AUTORUN="a request"` starts a run.
