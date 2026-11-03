@@ -126,7 +126,15 @@ pub fn data_dir() -> PathBuf {
     DATA.get_or_init(default_data_dir).clone()
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "ios")]
+fn default_data_dir() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let dir = home.join("Library/Application Support/colouring-pages");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+#[cfg(all(not(target_os = "android"), not(target_os = "ios")))]
 fn default_data_dir() -> PathBuf {
     std::env::var_os("COLOURING_PAGES_HOME")
         .map(PathBuf::from)

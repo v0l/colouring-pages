@@ -26,9 +26,26 @@ pub fn run_native() -> eframe::Result<()> {
         .with_app_id("colouring-pages");
     eframe::run_native(
         "colouring-pages",
-        eframe::NativeOptions { viewport, ..Default::default() },
+        eframe::NativeOptions { viewport, wgpu_options: wgpu_options(), ..Default::default() },
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     )
+}
+
+#[cfg(target_os = "ios")]
+fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew, wgpu};
+    let mut setup = WgpuSetupCreateNew::without_display_handle();
+    setup.device_descriptor = std::sync::Arc::new(|adapter| wgpu::DeviceDescriptor {
+        label: Some("colouring pages"),
+        required_limits: adapter.limits(),
+        ..Default::default()
+    });
+    WgpuConfiguration { wgpu_setup: WgpuSetup::CreateNew(setup), ..Default::default() }
+}
+
+#[cfg(all(not(target_os = "ios"), not(target_os = "android")))]
+fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
+    Default::default()
 }
 
 #[cfg(target_os = "android")]

@@ -1116,6 +1116,7 @@ impl eframe::App for App {
         self.poll(&ctx);
         let above = ctx.content_rect().top() - ctx.viewport_rect().top();
         let below = ctx.viewport_rect().bottom() - ctx.content_rect().bottom();
+        let below = if below > 0.0 { below + 8.0 } else { below };
         if below > 0.0 {
             egui::Panel::bottom("system-bottom")
                 .exact_size(below)

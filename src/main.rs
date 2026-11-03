@@ -4,6 +4,7 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("colouring-pages: {e}");
+            let _ = std::fs::write(colouring_pages::settings::data_dir().join("last-error.txt"), e.to_string());
             std::process::ExitCode::FAILURE
         }
     }
