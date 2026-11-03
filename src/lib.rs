@@ -2,6 +2,7 @@ pub mod app;
 pub mod backend;
 pub mod clean;
 pub mod export;
+pub mod jobs;
 #[cfg(test)]
 mod fake;
 pub mod llm;

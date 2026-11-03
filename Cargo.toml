@@ -68,6 +68,9 @@ label = "Colouring Pages"
 icon = "@mipmap/ic_launcher"
 uses_cleartext_traffic = true
 
+[build-dependencies]
+serde_json = "1"
+
 [dev-dependencies]
 tempfile = "3"
 

@@ -3,6 +3,15 @@ use crate::plan::Plan;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum Status {
+    #[default]
+    Done,
+    Running,
+    Failed(String),
+    Interrupted,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Meta {
     pub id: String,
@@ -12,6 +21,8 @@ pub struct Meta {
     pub plan: Option<Plan>,
     pub prompts: Vec<String>,
     pub pages: usize,
+    #[serde(default)]
+    pub status: Status,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +41,7 @@ impl Entry {
     }
 }
 
+#[derive(Clone)]
 pub struct Store {
     root: PathBuf,
 }
@@ -76,6 +88,19 @@ impl Store {
         out
     }
 
+    pub fn mark_interrupted(&self) {
+        for mut entry in self.list() {
+            if entry.meta.status == Status::Running {
+                entry.meta.status = Status::Interrupted;
+                let _ = self.save_meta(&entry.meta);
+            }
+        }
+    }
+
+    pub fn get(&self, id: &str) -> Option<Entry> {
+        self.list().into_iter().find(|e| e.meta.id == id)
+    }
+
     pub fn remove(&self, id: &str) -> Result<(), String> {
         if id.is_empty() || id.contains(['/', '\\', '.']) {
             return Err("that is not a saved set".into());
@@ -89,7 +114,36 @@ mod tests {
     use super::*;
 
     fn meta(id: &str, made: u64) -> Meta {
-        Meta { id: id.into(), request: "cats".into(), made, paper: "a4".into(), plan: None, prompts: vec!["p".into()], pages: 1 }
+        Meta {
+            id: id.into(),
+            request: "cats".into(),
+            made,
+            paper: "a4".into(),
+            plan: None,
+            prompts: vec!["p".into()],
+            pages: 1,
+            status: Status::Done,
+        }
+    }
+
+    #[test]
+    fn a_set_still_running_when_the_app_closed_comes_back_interrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store.save_meta(&Meta { status: Status::Running, ..meta("live", 2) }).unwrap();
+        store.save_meta(&meta("done", 1)).unwrap();
+        store.mark_interrupted();
+        assert_eq!(store.get("live").unwrap().meta.status, Status::Interrupted);
+        assert_eq!(store.get("done").unwrap().meta.status, Status::Done);
+    }
+
+    #[test]
+    fn sets_saved_before_there_was_a_status_read_as_done() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("history/old")).unwrap();
+        let old = r#"{"id":"old","request":"cats","made":1,"paper":"a4","plan":null,"prompts":[],"pages":4}"#;
+        std::fs::write(dir.path().join("history/old/meta.json"), old).unwrap();
+        assert_eq!(Store::new(dir.path()).get("old").unwrap().meta.status, Status::Done);
     }
 
     #[test]

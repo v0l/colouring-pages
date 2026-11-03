@@ -16,7 +16,7 @@ pub enum Listen {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default = "Settings::builtin")]
 pub struct Settings {
     pub backend: String,
     pub comfy_url: String,
@@ -34,8 +34,20 @@ pub struct Settings {
     pub speech_model: String,
 }
 
+const BAKED: &str = include_str!(concat!(env!("OUT_DIR"), "/defaults.json"));
+
 impl Default for Settings {
     fn default() -> Self {
+        if cfg!(test) { Settings::builtin() } else { Settings::baked() }
+    }
+}
+
+impl Settings {
+    fn baked() -> Self {
+        serde_json::from_str(BAKED).unwrap_or_else(|_| Settings::builtin())
+    }
+
+    fn builtin() -> Self {
         Settings {
             backend: Kind::Comfy.id().into(),
             comfy_url: DEFAULT_COMFY_URL.into(),
@@ -53,9 +65,7 @@ impl Default for Settings {
             speech_model: String::new(),
         }
     }
-}
 
-impl Settings {
     pub fn kind(&self) -> Kind {
         Kind::from_id(&self.backend)
     }
@@ -173,6 +183,14 @@ mod tests {
         assert!(s.problem().is_none());
         s.llm_model.clear();
         assert!(s.problem().unwrap().contains("language model"));
+    }
+
+    #[test]
+    fn baked_defaults_fill_only_the_fields_they_name() {
+        let s: Settings = serde_json::from_str(r#"{"paper":"letter"}"#).unwrap();
+        assert_eq!(s.llm_url, DEFAULT_LLM_URL);
+        assert_eq!(Settings::default(), Settings::builtin());
+        assert!(serde_json::from_str::<Settings>(BAKED).is_ok());
     }
 
     #[test]

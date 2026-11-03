@@ -67,9 +67,13 @@ pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request
     sink(Event::Planned(plan.clone()));
     let prompts = make_prompts(&llm, &plan).await;
     sink(Event::Drawing(prompts.clone()));
-    let base = net::random_seed(net::unix_seconds());
+    draw_pages(backend, paper, prompts.into_iter().enumerate().collect(), sink).await;
+}
+
+pub async fn draw_pages(backend: Arc<dyn ImageBackend>, paper: Paper, pages: Vec<(usize, String)>, sink: Sink) {
+    let base = net::random_seed(net::unix_seconds() ^ pages.len() as u64);
     let mut tasks = Vec::new();
-    for (i, prompt) in prompts.into_iter().enumerate() {
+    for (i, prompt) in pages {
         let (backend, sink) = (backend.clone(), sink.clone());
         tasks.push(tokio::spawn(async move {
             match draw_page_retrying(&*backend, &prompt, paper, base + i as u64).await {
@@ -85,12 +89,7 @@ pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request
 }
 
 pub async fn redraw(backend: Arc<dyn ImageBackend>, paper: Paper, index: usize, prompt: String, sink: Sink) {
-    let seed = net::random_seed(net::unix_seconds() ^ (index as u64 + 1));
-    match draw_page_retrying(&*backend, &prompt, paper, seed).await {
-        Ok(page) => sink(Event::Page(index, page)),
-        Err(e) => sink(Event::PageFailed(index, e)),
-    }
-    sink(Event::Finished);
+    draw_pages(backend, paper, vec![(index, prompt)], sink).await;
 }
 
 #[cfg(test)]
