@@ -347,7 +347,7 @@ impl App {
         std::thread::spawn(move || {
             let refs: Vec<&GrayImage> = pages.iter().collect();
             let done = match kind {
-                Export::Print => outputs::print(&refs, paper, &name).map(|_| "sent to the printer".to_string()),
+                Export::Print => outputs::print(&refs, paper, &name).map(|printer| format!("sent to {printer}")),
                 Export::Pdf => outputs::save_pdf(&refs, paper, &name),
                 Export::Png => outputs::save_png(&refs, &name),
             };

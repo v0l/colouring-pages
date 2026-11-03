@@ -58,7 +58,7 @@ mod android {
         })
     }
 
-    pub fn print_pdf(path: &str) -> Result<(), String> {
+    pub fn print_pdf(path: &str) -> Result<String, String> {
         with_activity(|env, activity| {
             let path = env.new_string(path)?;
             env.call_method(
@@ -67,7 +67,7 @@ mod android {
                 jni_sig!("(Ljava/lang/String;)V"),
                 &[(&path).into()],
             )?;
-            Ok(())
+            Ok("the print dialog".to_string())
         })
     }
 
@@ -104,12 +104,46 @@ pub fn ask_for_microphone() -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "android"))]
-pub fn print_pdf(path: &str) -> Result<(), String> {
-    print_with("lp", Path::new(path))
+pub fn print_pdf(path: &str) -> Result<String, String> {
+    let printer = pick_printer(&lpstat("-d"), &lpstat("-a"));
+    print_to("lp", printer.as_deref(), Path::new(path))?;
+    Ok(printer.unwrap_or_else(|| "the default printer".into()))
+}
+
+#[cfg(not(target_os = "android"))]
+fn lpstat(flag: &str) -> String {
+    std::process::Command::new("lpstat")
+        .arg(flag)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
+}
+
+pub fn pick_printer(default_out: &str, accepting_out: &str) -> Option<String> {
+    if let Some(name) = default_out.split("destination:").nth(1) {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    accepting_out
+        .lines()
+        .filter(|l| l.contains("accepting requests") && !l.contains("not accepting"))
+        .filter_map(|l| l.split_whitespace().next())
+        .next()
+        .map(str::to_string)
 }
 
 pub fn print_with(program: &str, file: &Path) -> Result<(), String> {
-    let out = std::process::Command::new(program).arg(file).output();
+    print_to(program, None, file)
+}
+
+pub fn print_to(program: &str, printer: Option<&str>, file: &Path) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(program);
+    if let Some(p) = printer {
+        cmd.arg("-d").arg(p);
+    }
+    let out = cmd.arg(file).output();
     match out {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => {
@@ -149,6 +183,25 @@ mod tests {
         let lp = script(dir.path(), "lp", &format!("echo \"$@\" > {}", log.display()));
         print_with(&lp, Path::new("/tmp/x.pdf")).unwrap();
         assert_eq!(std::fs::read_to_string(log).unwrap().trim(), "/tmp/x.pdf");
+    }
+
+    #[test]
+    fn a_named_printer_is_passed_to_lp() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let lp = script(dir.path(), "lp", &format!("echo \"$@\" > {}", log.display()));
+        print_to(&lp, Some("Brother_X"), Path::new("/tmp/x.pdf")).unwrap();
+        assert_eq!(std::fs::read_to_string(log).unwrap().trim(), "-d Brother_X /tmp/x.pdf");
+    }
+
+    #[test]
+    fn the_default_printer_wins_and_otherwise_the_first_accepting_one() {
+        let accepting = "Brother_DCP accepting requests since Mon 02 Nov\nOffice_Jet accepting requests since Mon\n";
+        assert_eq!(pick_printer("system default destination: Office_Jet\n", accepting).as_deref(), Some("Office_Jet"));
+        assert_eq!(pick_printer("no system default destination\n", accepting).as_deref(), Some("Brother_DCP"));
+        let refusing = "Old_One not accepting requests since Mon\nBrother_DCP accepting requests since Mon\n";
+        assert_eq!(pick_printer("no system default destination", refusing).as_deref(), Some("Brother_DCP"));
+        assert_eq!(pick_printer("no system default destination", ""), None);
     }
 
     #[test]

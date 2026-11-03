@@ -57,7 +57,7 @@ pub fn save_png(pages: &[&GrayImage], name: &str) -> Result<String, String> {
     Ok(saved_where(&last))
 }
 
-pub fn print(pages: &[&GrayImage], paper: Paper, name: &str) -> Result<(), String> {
+pub fn print(pages: &[&GrayImage], paper: Paper, name: &str) -> Result<String, String> {
     let temp = scratch(&format!("{name}-print.pdf"))?;
     std::fs::write(&temp, export::pdf(pages, paper)?).map_err(|e| e.to_string())?;
     platform::print_pdf(&temp.to_string_lossy())
