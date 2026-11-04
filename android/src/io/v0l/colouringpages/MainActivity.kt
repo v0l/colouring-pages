@@ -116,5 +116,9 @@ class MainActivity : NativeActivity() {
 
     companion object {
         const val PICK_PICTURE = 4185
+
+        init {
+            System.loadLibrary("colouring_pages")
+        }
     }
 }
