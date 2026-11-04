@@ -32,15 +32,27 @@ define_class!(
     }
 );
 
+#[link(name = "UIKit", kind = "framework")]
+unsafe extern "C" {
+    fn UIImagePNGRepresentation(image: *mut AnyObject) -> *mut NSData;
+}
+
 fn load(result: &AnyObject) {
     let provider: Retained<AnyObject> = unsafe { msg_send![result, itemProvider] };
-    let kind = NSString::from_str("public.jpeg");
-    let block = RcBlock::new(|data: *mut NSData, _error: *mut NSError| {
-        let bytes = unsafe { data.as_ref() }.map(|d| d.to_vec());
+    let Some(image_class) = AnyClass::get(c"UIImage") else {
+        PENDING.finish(None);
+        return;
+    };
+    let block = RcBlock::new(|image: *mut AnyObject, _error: *mut NSError| {
+        let bytes = if image.is_null() {
+            None
+        } else {
+            unsafe { UIImagePNGRepresentation(image).as_ref() }.map(|d| d.to_vec())
+        };
         PENDING.finish(bytes.and_then(save));
     });
     let _: Retained<AnyObject> =
-        unsafe { msg_send![&*provider, loadDataRepresentationForTypeIdentifier: &*kind, completionHandler: &*block] };
+        unsafe { msg_send![&*provider, loadObjectOfClass: image_class, completionHandler: &*block] };
 }
 
 fn save(bytes: Vec<u8>) -> Option<PathBuf> {
