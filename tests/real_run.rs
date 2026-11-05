@@ -23,7 +23,7 @@ fn cute_christmas_cats_gives_four_clean_pages_on_real_services() {
         });
         l.lock().unwrap().push(e)
     });
-    colouring_pages::net::runtime().block_on(run(llm, Arc::new(Comfy::new(&comfy)), Paper::A4, "cute christmas cats".into(), sink));
+    colouring_pages::net::runtime().block_on(run(llm, Arc::new(Comfy::new(&comfy)), Paper::A4, "cute christmas cats".into(), None, sink));
     let events = log.lock().unwrap();
     let mut n = 0;
     for e in events.iter() {
