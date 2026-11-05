@@ -9,6 +9,9 @@ pub mod llm;
 pub mod net;
 pub mod outputs;
 pub mod platform;
+pub mod pick_slot;
+#[cfg(target_os = "ios")]
+mod ios_picker;
 pub mod pipeline;
 pub mod plan;
 pub mod settings;

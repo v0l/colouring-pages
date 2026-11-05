@@ -71,6 +71,19 @@ mod android {
         })
     }
 
+    pub fn pick_picture(path: &str) -> Result<(), String> {
+        with_activity(|env, activity| {
+            let path = env.new_string(path)?;
+            env.call_method(
+                activity,
+                jni_str!("pickPicture"),
+                jni_sig!("(Ljava/lang/String;)V"),
+                &[(&path).into()],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn save_download(path: &str, name: &str, mime: &str) -> Result<(), String> {
         with_activity(|env, activity| {
             let path = env.new_string(path)?;
@@ -239,9 +252,38 @@ pub fn pick_picture(done: impl FnOnce(Option<std::path::PathBuf>) + Send + 'stat
     });
 }
 
-pub const CAN_PICK_PICTURE: bool = cfg!(any(target_os = "linux", target_os = "macos", target_os = "windows"));
+pub const CAN_PICK_PICTURE: bool =
+    cfg!(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android", target_os = "ios"));
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "android")]
+pub fn pick_picture(done: impl FnOnce(Option<std::path::PathBuf>) + Send + 'static) {
+    let target = crate::settings::data_dir().join("picked-reference");
+    PENDING.set(done);
+    if android::pick_picture(&target.to_string_lossy()).is_err() {
+        PENDING.finish(None);
+    }
+}
+
+#[cfg(target_os = "android")]
+static PENDING: crate::pick_slot::PickSlot = crate::pick_slot::PickSlot::new();
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_v0l_colouringpages_MainActivity_pictureChosen(
+    _env: *mut jni::sys::JNIEnv,
+    _activity: jni::sys::jobject,
+    chosen: jni::sys::jboolean,
+) {
+    let path = crate::settings::data_dir().join("picked-reference");
+    PENDING.finish(if chosen { Some(path) } else { None });
+}
+
+#[cfg(target_os = "ios")]
+pub fn pick_picture(done: impl FnOnce(Option<std::path::PathBuf>) + Send + 'static) {
+    crate::ios_picker::pick(Box::new(done));
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android", target_os = "ios")))]
 pub fn pick_picture(done: impl FnOnce(Option<std::path::PathBuf>) + Send + 'static) {
     done(None);
 }
