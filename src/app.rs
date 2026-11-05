@@ -46,6 +46,7 @@ enum Export {
 struct View {
     job: Job,
     textures: Vec<Option<(usize, TextureHandle)>>,
+    reference: Option<TextureHandle>,
 }
 
 pub struct App {
@@ -288,9 +289,9 @@ impl App {
         if self.view.as_ref().is_some_and(|v| v.job.version == job.version && v.job.id == job.id) {
             return;
         }
-        let mut textures = match self.view.take() {
-            Some(v) if v.job.id == job.id => v.textures,
-            _ => vec![None; PAGES],
+        let (mut textures, kept) = match self.view.take() {
+            Some(v) if v.job.id == job.id => (v.textures, v.reference),
+            _ => (vec![None; PAGES], None),
         };
         for (i, page) in job.pages.iter().enumerate() {
             textures[i] = match page {
@@ -307,7 +308,13 @@ impl App {
                 self.selected[i] = false;
             }
         }
-        self.view = Some(View { job, textures });
+        let reference = match kept {
+            Some(tex) => Some(tex),
+            None => job.reference.as_ref().and_then(|png| image::load_from_memory(png).ok()).map(|img| {
+                Self::texture(ctx, &format!("job-reference-{}", job.id), &img.to_luma8(), 160)
+            }),
+        };
+        self.view = Some(View { job, textures, reference });
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
@@ -419,6 +426,10 @@ fn hot(resp: &egui::Response, enabled: bool) -> bool {
 }
 
 fn big_button(ui: &mut Ui, rect: Rect, label: &str, tint: Color32, solid: bool, enabled: bool) -> egui::Response {
+    sized_button(ui, rect, label, tint, solid, enabled, 19.0)
+}
+
+fn sized_button(ui: &mut Ui, rect: Rect, label: &str, tint: Color32, solid: bool, enabled: bool, size: f32) -> egui::Response {
     let id = egui::Id::unique(("big", label, rect.min.x as i32, rect.min.y as i32));
     let resp = ui.interact(rect, id, if enabled { Sense::click() } else { Sense::hover() });
     let down = enabled && resp.is_pointer_button_down_on();
@@ -433,7 +444,7 @@ fn big_button(ui: &mut Ui, rect: Rect, label: &str, tint: Color32, solid: bool, 
     let p = ui.painter();
     p.rect_filled(rect, 2.0, fill);
     p.rect_stroke(rect, 2.0, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-    let job = egui_bench::text::caps(label, legend_font(19.0), ink, 2.0);
+    let job = egui_bench::text::caps(label, legend_font(size), ink, 2.0);
     let galley = egui_bench::text::lay(ui, job, rect.width() - 12.0);
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, ink);
     if hot(&resp, enabled) {
@@ -474,21 +485,24 @@ fn paint_mic(p: &egui::Painter, c: Pos2, r: f32, ink: Color32) {
 impl App {
     fn header(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let narrow = ui.available_width() < 600.0;
+        let (title, spacing, key_w) = if narrow { (12.0, 1.0, 104.0) } else { (18.0, 3.0, 130.0) };
         ui.horizontal_centered(|ui| {
-            ui.label(egui::RichText::new("COLOURING PAGES").font(legend_font(18.0)).color(VALUE).extra_letter_spacing(3.0));
+            ui.label(egui::RichText::new("COLOURING PAGES").font(legend_font(title)).color(VALUE).extra_letter_spacing(spacing));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(130.0, 40.0), Sense::hover());
-                self.parent_button(ui, rect);
-                let (rect, _) = ui.allocate_exact_size(vec2(130.0, 40.0), Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(vec2(key_w, 40.0), Sense::hover());
+                self.parent_button(ui, rect, if narrow { 12.0 } else { 19.0 });
+                let (rect, _) = ui.allocate_exact_size(vec2(key_w, 40.0), Sense::hover());
                 let label = if self.screen == Screen::Gallery { "back" } else { "my pages" };
-                if big_button(ui, rect, label, VALUE, false, true).clicked() {
+                let key_font = if narrow { 12.0 } else { 19.0 };
+                if sized_button(ui, rect, label, VALUE, false, true, key_font).clicked() {
                     if self.screen == Screen::Gallery {
                         self.back_from_gallery();
                     } else {
                         self.open_gallery(&ctx);
                     }
                 }
-                if self.jobs.any_running() && self.screen != Screen::Job {
+                if !narrow && self.jobs.any_running() && self.screen != Screen::Job {
                     let (rect, _) = ui.allocate_exact_size(vec2(150.0, 40.0), Sense::hover());
                     busy(ui, rect, None, "drawing", TRACE);
                 }
@@ -527,6 +541,10 @@ impl App {
                 _ => {
                     busy(ui, rect, None, "thinking...", TRACE);
                 }
+            }
+            if job.reference.is_some() {
+                let side = 96.0;
+                self.reference_thumb(ui, Rect::from_center_size(pos2(rect.center().x, rect.top() - 130.0), vec2(side, side)));
             }
             let cap = Rect::from_min_size(pos2(rect.left(), rect.top() - 46.0), vec2(w, 30.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(cap), |ui| {
@@ -570,7 +588,26 @@ impl App {
         }
     }
 
+    fn reference_thumb(&self, ui: &mut Ui, rect: Rect) {
+        let Some(tex) = self.view.as_ref().and_then(|v| v.reference.clone()) else { return };
+        ui.painter().rect_filled(rect, 2.0, Color32::WHITE);
+        let size = tex.size_vec2();
+        let fit = (rect.width() / size.x).min(rect.height() / size.y);
+        ui.painter().image(
+            tex.id(),
+            Rect::from_center_size(rect.center(), size * fit),
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        ui.painter().rect_stroke(rect, 2.0, Stroke::new(2.0, READOUT), egui::StrokeKind::Outside);
+    }
+
     fn banner(&mut self, ui: &mut Ui, ctx: &egui::Context, job: &Job, rect: Rect) {
+        let thumb_w = if job.reference.is_some() { rect.height() + 10.0 } else { 0.0 };
+        if thumb_w > 0.0 {
+            self.reference_thumb(ui, Rect::from_min_size(pos2(rect.left() + 2.0, rect.top() + 2.0), vec2(rect.height() - 4.0, rect.height() - 4.0)));
+        }
+        let rect = Rect::from_min_max(pos2(rect.left() + thumb_w, rect.top()), rect.max);
         let ready = job.ready();
         let missing = PAGES - ready;
         let (text, tint) = match (&job.step, job.running()) {
@@ -803,7 +840,7 @@ impl App {
         }
     }
 
-    fn parent_button(&mut self, ui: &mut Ui, rect: Rect) {
+    fn parent_button(&mut self, ui: &mut Ui, rect: Rect, font: f32) {
         let id = egui::Id::unique("parent-hold");
         let resp = ui.interact(rect, id, Sense::click_and_drag());
         let down = resp.is_pointer_button_down_on();
@@ -820,7 +857,7 @@ impl App {
         };
         let f = (held / HOLD_TO_OPEN).clamp(0.0, 1.0);
         let label = if down { "keep holding" } else { "parents" };
-        big_button(ui, rect, label, if down { READOUT } else { LEGEND }, false, true);
+        sized_button(ui, rect, label, if down { READOUT } else { LEGEND }, false, true, font);
         if down {
             let mut fill = rect;
             fill.set_width(rect.width() * f);

@@ -27,7 +27,7 @@ impl OpenRouter {
         let words = format!("Draw this image: {}", style::with_negative_inline(&job.prompt));
         let content = match &job.reference {
             Some(png) => json!([
-                {"type": "text", "text": format!("{words}\nUse the attached picture as a reference for what the main subject looks like, but redraw it as a clean black and white colouring page.")},
+                {"type": "text", "text": format!("Redraw the attached picture as a clean black and white colouring page with thick outlines and no shading. Keep its subject and composition, and follow these extra instructions: {}", style::with_negative_inline(&job.prompt))},
                 {"type": "image_url", "image_url": {"url": format!("data:{};base64,{}", mime(png), base64::engine::general_purpose::STANDARD.encode(png.as_slice()))}},
             ]),
             None => json!(words),
@@ -130,7 +130,7 @@ mod tests {
         let job = Job { reference: Some(std::sync::Arc::new(jpeg.clone())), ..job() };
         let r = OpenRouter::new("", "k", "").request(&job);
         let parts = r["messages"][0]["content"].as_array().unwrap();
-        assert!(parts[0]["text"].as_str().unwrap().contains("reference"));
+        assert!(parts[0]["text"].as_str().unwrap().starts_with("Redraw the attached picture"));
         let url = parts[1]["image_url"]["url"].as_str().unwrap();
         let (head, data) = url.split_once("base64,").unwrap();
         assert_eq!(head, "data:image/jpeg;");
