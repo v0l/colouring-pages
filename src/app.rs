@@ -1032,7 +1032,7 @@ impl App {
                 let g = egui_bench::text::lay(ui, egui_bench::text::caps("drawing from this picture", legend_font(12.0), READOUT, 1.0), 150.0);
                 ui.painter().galley(pos2(text.left(), text.center().y - g.size().y / 2.0), g, READOUT);
                 let key = Rect::from_min_size(pos2(text.right() + 10.0, top.y), vec2(110.0, 30.0));
-                if big_button(ui, key, "take off", FAULT, false, true).clicked() {
+                if sized_button(ui, key, "take off", FAULT, false, true, 13.0).clicked() {
                     self.reference = None;
                 }
                 let close = self.settings.close;

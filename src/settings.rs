@@ -214,6 +214,19 @@ mod tests {
     }
 
     #[test]
+    fn the_detail_level_and_closeness_are_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = Settings::default();
+        s.detail = Detail::VeryDetailed;
+        s.close = true;
+        s.save(&path).unwrap();
+        let back = Settings::load(&path);
+        assert_eq!(back.look(), Look { detail: Detail::VeryDetailed, close: true });
+        assert_eq!(Settings::default().look().detail, Detail::Medium);
+    }
+
+    #[test]
     fn the_backend_follows_the_setting() {
         let mut s = Settings::default();
         assert_eq!(s.image_backend().name(), "comfyui");
