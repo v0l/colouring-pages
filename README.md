@@ -72,3 +72,7 @@ If `fake-mic.wav` exists in the data folder, the microphone key plays that clip 
 ### Screenshots
 
 `./shots.sh NAME WIDTH HEIGHT [ENV=VAL ...]` runs the desktop build inside a private headless sway with the lavapipe software renderer and writes `shots/NAME.png`. `COLOURING_SHOW=settings|gallery|results` opens that screen, and `COLOURING_AUTORUN="a request"` starts a run.
+
+## Licence
+
+GPL-3.0-only. See `LICENSE`. It reuses code from agentbench, which is GPL-3.0-only.

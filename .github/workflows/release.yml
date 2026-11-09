@@ -1,0 +1,128 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build, nothing is published
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Tag matches the crate version and the changelog
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "$TAG" = "v$version" ] || { echo "tag $TAG is not v$version"; exit 1; }
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no entry for $version"; exit 1; }
+
+  desktop:
+    needs: check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config cmake clang libasound2-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          mkdir -p dist/colouring-pages
+          cp target/release/colouring-pages LICENSE README.md dist/colouring-pages/
+          tar -C dist -czf "dist/colouring-pages-${TAG}-x86_64-unknown-linux-gnu.tar.gz" colouring-pages
+          rm -r dist/colouring-pages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  android:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: SDK, build tools and NDK
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null || true
+          "$sdkmanager" "platforms;android-34" "build-tools;34.0.0" "ndk;28.2.13676358"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - run: cargo install cargo-ndk --locked
+      - name: Decode signing keystore
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$SIGNING_KEYSTORE_BASE64"
+          echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+      - name: Build and sign
+        env:
+          RELEASE: "1"
+          KEYSTORE: ${{ runner.temp }}/release.keystore
+          KEYSTORE_PASS: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+        run: ./packaging/android/build.sh
+      - name: Name the artifact after the tag
+        run: |
+          mkdir -p dist
+          cp target/android/colouring-pages.apk "dist/colouring-pages-${TAG}-android-arm64.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [desktop, android]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes and checksums
+        run: |
+          awk -v v="${TAG#v}" '/^## \[/{p=index($0,"[" v "]")>0;next} p' CHANGELOG.md > notes.md
+          cd dist
+          sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          body_path: notes.md
+          files: dist/*
