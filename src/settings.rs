@@ -1,11 +1,13 @@
 use crate::backend::{Comfy, ImageBackend, Kind, OpenRouter};
 use crate::clean::Paper;
+use crate::detail::{Detail, Look};
 use crate::llm::Llm;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_LLM_URL: &str = "https://yalr.v0l.io/v1";
 pub const DEFAULT_LLM_MODEL: &str = "code";
+pub const DEFAULT_VISION_MODEL: &str = "";
 pub const DEFAULT_COMFY_URL: &str = "http://10.100.2.32:8188";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -26,6 +28,9 @@ pub struct Settings {
     pub llm_url: String,
     pub llm_key: String,
     pub llm_model: String,
+    pub vision_model: String,
+    pub detail: Detail,
+    pub close: bool,
     pub paper: String,
     pub listen: Listen,
     pub whisper_model: String,
@@ -57,6 +62,9 @@ impl Settings {
             llm_url: DEFAULT_LLM_URL.into(),
             llm_key: String::new(),
             llm_model: DEFAULT_LLM_MODEL.into(),
+            vision_model: DEFAULT_VISION_MODEL.into(),
+            detail: Detail::default(),
+            close: false,
             paper: Paper::A4.id().into(),
             listen: if cfg!(target_os = "android") { Listen::Server } else { Listen::Here },
             whisper_model: egui_bench::voice::DEFAULT_MODEL.into(),
@@ -75,7 +83,11 @@ impl Settings {
     }
 
     pub fn llm(&self) -> Llm {
-        Llm { url: self.llm_url.clone(), key: self.llm_key.clone(), model: self.llm_model.clone() }
+        Llm { url: self.llm_url.clone(), key: self.llm_key.clone(), model: self.llm_model.clone(), vision_model: self.vision_model.clone() }
+    }
+
+    pub fn look(&self) -> Look {
+        Look { detail: self.detail, close: self.close }
     }
 
     pub fn image_backend(&self) -> Box<dyn ImageBackend> {

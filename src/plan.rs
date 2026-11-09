@@ -1,3 +1,4 @@
+use crate::detail::Detail;
 use crate::llm::{Llm, json_object};
 use crate::style::kid_safe;
 use serde::{Deserialize, Serialize};
@@ -5,50 +6,16 @@ use serde_json::Value;
 
 pub const PAGES: usize = 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum AgeBand {
-    Toddler,
-    #[default]
-    Young,
-    Older,
-}
-
-impl AgeBand {
-    pub fn parse(text: &str) -> AgeBand {
-        let t = text.to_lowercase();
-        if t.contains("toddler") || t.contains("2-4") || t.contains("2 to 4") || t.contains("3-5") {
-            AgeBand::Toddler
-        } else if t.contains("older") || t.contains("8-") || t.contains("9-") || t.contains("10") {
-            AgeBand::Older
-        } else {
-            AgeBand::Young
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            AgeBand::Toddler => "ages 2 to 4",
-            AgeBand::Young => "ages 5 to 7",
-            AgeBand::Older => "ages 8 to 10",
-        }
-    }
-
-    pub fn detail(self) -> &'static str {
-        match self {
-            AgeBand::Toddler => "very few, very big shapes, one main subject, nothing small",
-            AgeBand::Young => "big simple shapes, a few clear details",
-            AgeBand::Older => "more detail and patterns, still clean closed outlines",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
     pub subject: String,
     pub setting: String,
     pub mood: String,
     pub ideas: Vec<String>,
-    pub age: AgeBand,
+    #[serde(default)]
+    pub detail: Detail,
+    #[serde(default)]
+    pub picture: Option<String>,
     pub softened: Option<String>,
 }
 
@@ -79,7 +46,7 @@ Reply with one JSON object and nothing else:
   "subject": "main thing, a few words",
   "setting": "where it happens",
   "mood": "one or two words",
-  "age": "toddler | young | older",
+  "picture": "only when a picture is attached: what it shows, in one or two sentences (the subject, its pose, the setting, distinctive features); otherwise empty",
   "softened": "",
   "ideas": ["idea 1", "idea 2", "idea 3", "idea 4"]
 }
@@ -88,20 +55,27 @@ Rules:
 - Exactly 4 ideas. Each is ONE simple scene a child can colour in, one sentence, concrete, no text or words in the picture. The 4 scenes must differ from each other.
 - Everything must be suitable for children aged 2 to 10. If the request is only partly suitable, drop the unsuitable part, make the ideas friendly, and say what you changed in "softened".
 - If nothing suitable can be made (violence, weapons, nudity, drugs, hate, anything scary or adult), set "safe" to false, give a short kind "reason" for a child, and leave ideas empty.
-- "age": toddler (2 to 4) for very simple requests, young (5 to 7) by default, older (8 to 10) when the request asks for detail or a complex subject."#;
+- You are told how detailed the pages must be. Write ideas that fit that level: few objects at the low levels, a busy scene at the high levels.
+- When a picture is attached, it is the heart of the request. Describe it in "picture", and make all 4 ideas variations of THAT picture's subject (a different pose, setting, activity or angle for the same subject, keeping its distinctive features), unless the child's words ask for something else. Do not invent an unrelated scene."#;
 
 pub const PROMPT_SYSTEM: &str = r#"You write image prompts for a colouring page generator. You get a list of scene ideas. For each idea write one prompt describing only the scene: the subject, what it is doing, a few simple objects around it, a simple background. Use plain words. Do not describe colours, shading or style, that is added later. No text or letters in the picture.
 
 Reply with one JSON object and nothing else:
 { "prompts": ["prompt for idea 1", "prompt for idea 2", ...] }
 
-Exactly one prompt per idea, in the same order."#;
+Exactly one prompt per idea, in the same order. You are told how detailed the scenes must be: fit the number of objects and the background to that level.
 
-pub fn plan_request(request: &str) -> String {
-    format!("The child said: \"{}\"", request.trim().replace('"', "'"))
+When you are told what an attached picture shows, every prompt must name that same subject with its distinctive features and say how this page varies it (the pose, setting or activity from the idea). Never describe a different subject."#;
+
+pub fn plan_request(request: &str, detail: Detail, has_picture: bool) -> String {
+    let mut out = format!("The child said: \"{}\"\nDetail level: {}.", request.trim().replace('"', "'"), detail.brief());
+    if has_picture {
+        out.push_str("\nA picture is attached. Base every idea on it.");
+    }
+    out
 }
 
-pub fn parse_plan(raw: &str, request: &str) -> Result<Plan, PlanError> {
+pub fn parse_plan(raw: &str, request: &str, detail: Detail) -> Result<Plan, PlanError> {
     let v = json_object(raw).ok_or_else(|| PlanError::Unreadable("the plan was not JSON".into()))?;
     let v = match v {
         Value::Array(_) => return Err(PlanError::Unreadable("the plan was a list".into())),
@@ -149,7 +123,8 @@ pub fn parse_plan(raw: &str, request: &str) -> Result<Plan, PlanError> {
         subject,
         setting,
         mood,
-        age: AgeBand::parse(&text(&v, "age")),
+        detail,
+        picture: Some(text(&v, "picture")).filter(|s| !s.is_empty()),
         softened,
     })
 }
@@ -175,7 +150,7 @@ pub fn fit_ideas(mut ideas: Vec<String>, subject: &str) -> Vec<String> {
     ideas
 }
 
-pub fn parse_prompts(raw: &str, ideas: &[String]) -> Result<Vec<String>, String> {
+pub fn parse_prompts(raw: &str, ideas: &[String], detail: Detail) -> Result<Vec<String>, String> {
     let v = json_object(raw).ok_or_else(|| "the prompts were not JSON".to_string())?;
     let list = match &v {
         Value::Array(a) => Some(a),
@@ -206,35 +181,41 @@ pub fn parse_prompts(raw: &str, ideas: &[String]) -> Result<Vec<String>, String>
         .iter()
         .enumerate()
         .map(|(i, idea)| match got.get(i) {
-            Some(p) if !p.is_empty() && kid_safe(p) => crate::style::finish(p),
-            _ => crate::style::finish(idea),
+            Some(p) if !p.is_empty() && kid_safe(p) => crate::style::finish(p, detail),
+            _ => crate::style::finish(idea, detail),
         })
         .collect())
 }
 
 pub fn prompts_request(plan: &Plan) -> String {
     let mut out = format!(
-        "Subject: {}\nSetting: {}\nMood: {}\nFor children {}: {}.\nIdeas:\n",
+        "Subject: {}\nSetting: {}\nMood: {}\nDetail level: {}.\n",
         plan.subject,
         plan.setting,
         plan.mood,
-        plan.age.label(),
-        plan.age.detail()
+        plan.detail.brief()
     );
+    if let Some(picture) = &plan.picture {
+        out.push_str(&format!("The attached picture shows: {picture}\n"));
+    }
+    out.push_str("Ideas:\n");
     for (i, idea) in plan.ideas.iter().enumerate() {
         out.push_str(&format!("{}. {}\n", i + 1, idea));
     }
     out
 }
 
-pub async fn make_plan(llm: &Llm, request: &str) -> Result<Plan, PlanError> {
+pub async fn make_plan(llm: &Llm, request: &str, detail: Detail, picture: Option<&[u8]>) -> Result<Plan, PlanError> {
     if !kid_safe(request) {
         return Err(PlanError::Refused(REFUSAL.into()));
     }
     let mut last = String::new();
     for _ in 0..2 {
-        let raw = llm.chat(PLAN_SYSTEM, &plan_request(request)).await.map_err(PlanError::Failed)?;
-        match parse_plan(&raw, request) {
+        let raw = llm
+            .chat_with(PLAN_SYSTEM, &plan_request(request, detail, picture.is_some()), picture)
+            .await
+            .map_err(PlanError::Failed)?;
+        match parse_plan(&raw, request, detail) {
             Ok(plan) => return Ok(plan),
             Err(PlanError::Unreadable(why)) => last = why,
             Err(e) => return Err(e),
@@ -246,11 +227,11 @@ pub async fn make_plan(llm: &Llm, request: &str) -> Result<Plan, PlanError> {
 pub async fn make_prompts(llm: &Llm, plan: &Plan) -> Vec<String> {
     for _ in 0..2 {
         let Ok(raw) = llm.chat(PROMPT_SYSTEM, &prompts_request(plan)).await else { continue };
-        if let Ok(p) = parse_prompts(&raw, &plan.ideas) {
+        if let Ok(p) = parse_prompts(&raw, &plan.ideas, plan.detail) {
             return p;
         }
     }
-    plan.ideas.iter().map(|i| crate::style::finish(i)).collect()
+    plan.ideas.iter().map(|i| crate::style::finish(i, plan.detail)).collect()
 }
 
 #[cfg(test)]
@@ -260,7 +241,9 @@ mod tests {
     use crate::style::STYLE_SUFFIX;
     use serde_json::json;
 
-    const GOOD: &str = r#"{"safe":true,"reason":"","subject":"christmas cats","setting":"a cosy living room","mood":"cheerful","age":"young","softened":"","ideas":["A kitten hanging a bauble on a tree","A cat wearing a santa hat","Two cats wrapping a present","A cat asleep by the fireplace"]}"#;
+    const GOOD: &str = r#"{"safe":true,"reason":"","subject":"christmas cats","setting":"a cosy living room","mood":"cheerful","picture":"","softened":"","ideas":["A kitten hanging a bauble on a tree","A cat wearing a santa hat","Two cats wrapping a present","A cat asleep by the fireplace"]}"#;
+
+    const M: Detail = Detail::Medium;
 
     fn ideas() -> Vec<String> {
         ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect()
@@ -268,38 +251,38 @@ mod tests {
 
     #[test]
     fn a_good_plan_is_read() {
-        let p = parse_plan(GOOD, "cute christmas cats").unwrap();
+        let p = parse_plan(GOOD, "cute christmas cats", M).unwrap();
         assert_eq!(p.subject, "christmas cats");
         assert_eq!(p.ideas.len(), 4);
-        assert_eq!(p.age, AgeBand::Young);
+        assert_eq!(p.detail, M);
         assert!(p.softened.is_none());
     }
 
     #[test]
     fn a_plan_in_a_fence_with_chatter_is_read() {
         let raw = format!("Here is the plan:\n```json\n{GOOD}\n```\nHope that helps!");
-        assert_eq!(parse_plan(&raw, "x").unwrap().ideas.len(), 4);
+        assert_eq!(parse_plan(&raw, "x", M).unwrap().ideas.len(), 4);
     }
 
     #[test]
     fn a_plan_missing_fields_still_gets_four_ideas() {
-        let p = parse_plan(r#"{"ideas":["one cat","two cats"]}"#, "cats").unwrap();
+        let p = parse_plan(r#"{"ideas":["one cat","two cats"]}"#, "cats", M).unwrap();
         assert_eq!(p.ideas.len(), PAGES);
         assert_eq!(p.subject, "cats");
-        assert_eq!(p.age, AgeBand::Young);
+        assert_eq!(p.detail, M);
         assert_eq!(p.ideas[0], "one cat");
         assert_ne!(p.ideas[2], p.ideas[0]);
     }
 
     #[test]
     fn too_many_ideas_are_cut_to_four() {
-        let p = parse_plan(r#"{"ideas":["1","2","3","4","5","6"]}"#, "x").unwrap();
+        let p = parse_plan(r#"{"ideas":["1","2","3","4","5","6"]}"#, "x", M).unwrap();
         assert_eq!(p.ideas, vec!["1", "2", "3", "4"]);
     }
 
     #[test]
     fn ideas_may_be_objects() {
-        let p = parse_plan(r#"{"ideas":[{"idea":"a cat"},{"scene":"a dog"},{"nope":1},7]}"#, "x").unwrap();
+        let p = parse_plan(r#"{"ideas":[{"idea":"a cat"},{"scene":"a dog"},{"nope":1},7]}"#, "x", M).unwrap();
         assert_eq!(p.ideas[0], "a cat");
         assert_eq!(p.ideas[1], "a dog");
         assert_eq!(p.ideas.len(), 4);
@@ -308,7 +291,7 @@ mod tests {
     #[test]
     fn malformed_plans_are_errors_not_panics() {
         for raw in ["", "I cannot do that", "{", "[1,2,3]", r#"{"ideas":"a cat"}"#, r#"{"ideas":[]}"#, r#"{"ideas":[1,2]}"#, "null"] {
-            assert!(matches!(parse_plan(raw, "x"), Err(PlanError::Unreadable(_))), "{raw}");
+            assert!(matches!(parse_plan(raw, "x", M), Err(PlanError::Unreadable(_))), "{raw}");
         }
     }
 
@@ -316,35 +299,27 @@ mod tests {
     fn an_unsafe_plan_is_refused_with_the_reason() {
         let raw = r#"{"safe":false,"reason":"Let's draw something friendly instead.","ideas":[]}"#;
         assert_eq!(
-            parse_plan(raw, "x"),
+            parse_plan(raw, "x", M),
             Err(PlanError::Refused("Let's draw something friendly instead.".into()))
         );
         let raw = r#"{"safe":"false","ideas":["a"]}"#;
-        assert_eq!(parse_plan(raw, "x"), Err(PlanError::Refused(REFUSAL.into())));
+        assert_eq!(parse_plan(raw, "x", M), Err(PlanError::Refused(REFUSAL.into())));
     }
 
     #[test]
     fn unsafe_ideas_are_dropped_even_if_the_model_says_safe() {
         let raw = r#"{"safe":true,"ideas":["a gun fight","a happy dog"]}"#;
-        let p = parse_plan(raw, "x").unwrap();
+        let p = parse_plan(raw, "x", M).unwrap();
         assert!(p.ideas.iter().all(|i| !i.contains("gun")));
         assert!(p.ideas[0].contains("happy dog"));
         let raw = r#"{"safe":true,"ideas":["a gun fight"]}"#;
-        assert!(parse_plan(raw, "x").is_err());
-    }
-
-    #[test]
-    fn the_age_band_is_read_from_loose_words() {
-        assert_eq!(AgeBand::parse("toddler"), AgeBand::Toddler);
-        assert_eq!(AgeBand::parse("Older kids"), AgeBand::Older);
-        assert_eq!(AgeBand::parse("young"), AgeBand::Young);
-        assert_eq!(AgeBand::parse(""), AgeBand::Young);
+        assert!(parse_plan(raw, "x", M).is_err());
     }
 
     #[test]
     fn prompts_always_end_with_the_style_suffix() {
         let raw = r#"{"prompts":["a cat with a hat","a dog","","a bird"]}"#;
-        let p = parse_prompts(raw, &ideas()).unwrap();
+        let p = parse_prompts(raw, &ideas(), M).unwrap();
         assert_eq!(p.len(), 4);
         assert!(p.iter().all(|s| s.ends_with(STYLE_SUFFIX)));
         assert!(p[0].starts_with("a cat with a hat"));
@@ -353,10 +328,10 @@ mod tests {
 
     #[test]
     fn prompts_may_be_a_bare_list_or_objects_and_short_lists_are_filled() {
-        let p = parse_prompts(r#"["x","y"]"#, &ideas()).unwrap();
+        let p = parse_prompts(r#"["x","y"]"#, &ideas(), M).unwrap();
         assert_eq!(p.len(), 4);
         assert!(p[3].starts_with("d."));
-        let p = parse_prompts(r#"{"pages":[{"prompt":"one"},{"prompt":"two"}]}"#, &ideas()).unwrap();
+        let p = parse_prompts(r#"{"pages":[{"prompt":"one"},{"prompt":"two"}]}"#, &ideas(), M).unwrap();
         assert!(p[1].starts_with("two"));
         assert!(p.iter().all(|s| s.ends_with(STYLE_SUFFIX)));
     }
@@ -364,13 +339,13 @@ mod tests {
     #[test]
     fn malformed_prompts_are_errors() {
         for raw in ["", "nothing", "{}", r#"{"prompts":"a"}"#, r#"{"prompts":[]}"#, r#"{"prompts":["",""]}"#, "{"] {
-            assert!(parse_prompts(raw, &ideas()).is_err(), "{raw}");
+            assert!(parse_prompts(raw, &ideas(), M).is_err(), "{raw}");
         }
     }
 
     #[test]
     fn an_unsafe_prompt_falls_back_to_its_idea() {
-        let p = parse_prompts(r#"{"prompts":["a gun","b","c","d"]}"#, &ideas()).unwrap();
+        let p = parse_prompts(r#"{"prompts":["a gun","b","c","d"]}"#, &ideas(), M).unwrap();
         assert!(p[0].starts_with("a."));
     }
 
@@ -381,14 +356,14 @@ mod tests {
             let a = answers[i.min(answers.len() - 1)].clone();
             Reply::json(json!({"choices":[{"message":{"content":a}}]}))
         });
-        let llm = Llm { url: fake.url.clone(), key: String::new(), model: "m".into() };
+        let llm = Llm { url: fake.url.clone(), key: String::new(), model: "m".into(), vision_model: String::new() };
         (fake, llm)
     }
 
     #[test]
     fn make_plan_retries_once_on_garbage() {
         let (fake, llm) = llm_returning(vec!["sorry".into(), GOOD.into()]);
-        let p = crate::net::runtime().block_on(make_plan(&llm, "cute christmas cats")).unwrap();
+        let p = crate::net::runtime().block_on(make_plan(&llm, "cute christmas cats", M, None)).unwrap();
         assert_eq!(p.ideas.len(), 4);
         assert_eq!(fake.requests().len(), 2);
     }
@@ -396,7 +371,7 @@ mod tests {
     #[test]
     fn make_plan_gives_up_after_two_garbage_answers() {
         let (fake, llm) = llm_returning(vec!["sorry".into()]);
-        let e = crate::net::runtime().block_on(make_plan(&llm, "cats")).unwrap_err();
+        let e = crate::net::runtime().block_on(make_plan(&llm, "cats", M, None)).unwrap_err();
         assert!(matches!(e, PlanError::Unreadable(_)));
         assert_eq!(fake.requests().len(), 2);
     }
@@ -404,7 +379,7 @@ mod tests {
     #[test]
     fn an_unsafe_request_never_reaches_the_model() {
         let (fake, llm) = llm_returning(vec![GOOD.into()]);
-        let e = crate::net::runtime().block_on(make_plan(&llm, "a gun")).unwrap_err();
+        let e = crate::net::runtime().block_on(make_plan(&llm, "a gun", M, None)).unwrap_err();
         assert!(matches!(e, PlanError::Refused(_)));
         assert!(fake.requests().is_empty());
     }
@@ -412,7 +387,7 @@ mod tests {
     #[test]
     fn make_prompts_falls_back_to_the_ideas_when_the_model_fails() {
         let (_fake, llm) = llm_returning(vec!["nonsense".into()]);
-        let plan = parse_plan(GOOD, "x").unwrap();
+        let plan = parse_plan(GOOD, "x", M).unwrap();
         let p = crate::net::runtime().block_on(make_prompts(&llm, &plan));
         assert_eq!(p.len(), 4);
         assert!(p.iter().all(|s| s.ends_with(STYLE_SUFFIX)));
@@ -421,6 +396,42 @@ mod tests {
 
     #[test]
     fn the_request_is_quoted_safely() {
-        assert_eq!(plan_request(" say \"hi\" "), "The child said: \"say 'hi'\"");
+        assert!(plan_request(" say \"hi\" ", M, false).starts_with("The child said: \"say 'hi'\""));
+    }
+
+    fn doll_plan() -> String {
+        r#"{"safe":true,"subject":"a ginger tabby cat","picture":"a ginger tabby cat with a white chest sitting on a red sofa","setting":"living room","mood":"calm","ideas":["the ginger tabby cat chasing a butterfly","the ginger tabby cat asleep in a basket","the ginger tabby cat playing with yarn","the ginger tabby cat looking out of a window"]}"#.into()
+    }
+
+    #[test]
+    fn the_plan_request_carries_the_picture_only_when_there_is_one() {
+        let (fake, llm) = llm_returning(vec![doll_plan()]);
+        let rt = crate::net::runtime();
+        let plan = rt.block_on(make_plan(&llm, "my cat", M, Some(&[0xFF, 0xD8, 9]))).unwrap();
+        rt.block_on(make_plan(&llm, "my cat", M, None)).unwrap();
+        let seen = fake.requests();
+        let with = &seen[0].json()["messages"][1]["content"];
+        assert!(with[0]["text"].as_str().unwrap().contains("picture is attached"));
+        assert!(with[1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/jpeg;base64,"));
+        let without = &seen[1].json()["messages"][1]["content"];
+        assert!(without.is_string() && !without.as_str().unwrap().contains("picture"));
+        assert_eq!(plan.picture.as_deref(), Some("a ginger tabby cat with a white chest sitting on a red sofa"));
+    }
+
+    #[test]
+    fn the_plan_and_prompt_steps_are_told_the_level_and_the_picture_subject() {
+        let (fake, llm) = llm_returning(vec![
+            doll_plan(),
+            r#"{"prompts":["a ginger tabby cat chasing a butterfly","a ginger tabby cat asleep","a ginger tabby cat with yarn","a ginger tabby cat at a window"]}"#.into(),
+        ]);
+        let rt = crate::net::runtime();
+        let plan = rt.block_on(make_plan(&llm, "my cat", Detail::VeryDetailed, Some(b"x"))).unwrap();
+        assert_eq!(plan.detail, Detail::VeryDetailed);
+        let prompts = rt.block_on(make_prompts(&llm, &plan));
+        let seen = fake.requests();
+        assert!(seen[0].text().contains("very detailed"));
+        let ask = seen[1].text();
+        assert!(ask.contains("very detailed") && ask.contains("ginger tabby cat with a white chest"), "{ask}");
+        assert!(prompts.iter().all(|p| p.contains("ginger tabby cat") && p.contains(Detail::VeryDetailed.words())));
     }
 }

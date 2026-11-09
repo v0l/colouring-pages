@@ -24,10 +24,11 @@ impl OpenRouter {
 
     pub fn request(&self, job: &Job) -> Value {
         let aspect = if job.width <= job.height { "3:4" } else { "4:3" };
-        let words = format!("Draw this image: {}", style::with_negative_inline(&job.prompt));
+        let detail = job.look.detail;
+        let words = format!("Draw this image: {}", style::with_negative_inline(&job.prompt, detail));
         let content = match &job.reference {
             Some(png) => json!([
-                {"type": "text", "text": format!("Redraw the attached picture as a clean black and white colouring page with thick outlines and no shading. Keep its subject and composition, and follow these extra instructions: {}", style::with_negative_inline(&job.prompt))},
+                {"type": "text", "text": format!("{} The attached picture shows the subject to draw. {} Draw that same subject, with the same distinctive features, as a new page: {}", closeness(job.look.close), "Do not copy its photo style.", style::with_negative_inline(&job.prompt, detail))},
                 {"type": "image_url", "image_url": {"url": format!("data:{};base64,{}", mime(png), base64::engine::general_purpose::STANDARD.encode(png.as_slice()))}},
             ]),
             None => json!(words),
@@ -38,6 +39,14 @@ impl OpenRouter {
             "image_config": { "aspect_ratio": aspect },
             "messages": [{ "role": "user", "content": content }],
         })
+    }
+}
+
+fn closeness(close: bool) -> &'static str {
+    if close {
+        "Stay close to the attached picture: keep its subject, pose and composition."
+    } else {
+        "Use the attached picture as inspiration: keep its subject and what makes it recognisable, but the pose, setting and composition may change as described."
     }
 }
 
@@ -105,10 +114,11 @@ impl ImageBackend for OpenRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detail::{Detail, Look};
     use crate::fake::{Reply, serve};
 
     fn job() -> Job {
-        Job { prompt: style::finish("a cat"), negative: style::NEGATIVE.into(), width: 960, height: 1280, seed: 1, reference: None }
+        Job { prompt: style::finish("a cat", Detail::Medium), negative: style::negative(Detail::Medium), width: 960, height: 1280, seed: 1, reference: None, look: Look::default() }
     }
 
     fn data_url(bytes: &[u8]) -> String {
@@ -130,11 +140,21 @@ mod tests {
         let job = Job { reference: Some(std::sync::Arc::new(jpeg.clone())), ..job() };
         let r = OpenRouter::new("", "k", "").request(&job);
         let parts = r["messages"][0]["content"].as_array().unwrap();
-        assert!(parts[0]["text"].as_str().unwrap().starts_with("Redraw the attached picture"));
+        let text = parts[0]["text"].as_str().unwrap();
+        assert!(text.contains("Stay close") == false && text.contains("inspiration"));
+        assert!(!text.contains("extra instructions") && !text.contains("Redraw"));
+        assert!(text.contains("a cat"));
         let url = parts[1]["image_url"]["url"].as_str().unwrap();
         let (head, data) = url.split_once("base64,").unwrap();
         assert_eq!(head, "data:image/jpeg;");
         assert_eq!(base64::engine::general_purpose::STANDARD.decode(data).unwrap(), jpeg);
+    }
+
+    #[test]
+    fn staying_close_changes_the_reference_instruction() {
+        let job = Job { reference: Some(std::sync::Arc::new(vec![1])), look: Look { detail: Detail::Medium, close: true }, ..job() };
+        let r = OpenRouter::new("", "k", "").request(&job);
+        assert!(r["messages"][0]["content"][0]["text"].as_str().unwrap().contains("Stay close"));
     }
 
     #[test]

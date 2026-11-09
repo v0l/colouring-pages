@@ -1,4 +1,5 @@
 use crate::clean::Paper;
+use crate::detail::Look;
 use crate::plan::Plan;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,8 @@ pub struct Meta {
     pub pages: usize,
     #[serde(default)]
     pub status: Status,
+    #[serde(default)]
+    pub look: Look,
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +45,10 @@ impl Entry {
 
     pub fn reference(&self) -> Option<std::sync::Arc<Vec<u8>>> {
         std::fs::read(self.reference_path()).ok().map(std::sync::Arc::new)
+    }
+
+    pub fn look(&self) -> Look {
+        self.meta.look
     }
 
     pub fn paper(&self) -> Paper {
@@ -149,6 +156,7 @@ mod tests {
             prompts: vec!["p".into()],
             pages: 1,
             status: Status::Done,
+            look: Look::default(),
         }
     }
 

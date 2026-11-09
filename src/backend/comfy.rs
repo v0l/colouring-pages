@@ -45,7 +45,7 @@ impl Comfy {
             w["11"] = json!({"class_type": "ImageScale", "inputs": {"image": ["10", 0], "upscale_method": "lanczos", "width": job.width, "height": job.height, "crop": "center"}});
             w["12"] = json!({"class_type": "VAEEncode", "inputs": {"pixels": ["11", 0], "vae": ["3", 0]}});
             w["7"]["inputs"]["latent_image"] = json!(["12", 0]);
-            w["7"]["inputs"]["denoise"] = json!(REFERENCE_DENOISE);
+            w["7"]["inputs"]["denoise"] = json!(job.look.denoise());
         }
         w
     }
@@ -67,8 +67,6 @@ impl Comfy {
         v.get("name").and_then(|n| n.as_str()).map(str::to_string).ok_or_else(|| "ComfyUI did not take the reference picture".into())
     }
 }
-
-const REFERENCE_DENOISE: f32 = 0.82;
 
 fn client_id(seed: u64) -> String {
     format!("colouring-pages-{seed}")
@@ -168,11 +166,12 @@ impl ImageBackend for Comfy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detail::{Detail, Look};
     use crate::fake::{Reply, serve};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn job() -> Job {
-        Job { prompt: "a cat".into(), negative: "shading".into(), width: 960, height: 1280, seed: 7, reference: None }
+        Job { prompt: "a cat".into(), negative: "shading".into(), width: 960, height: 1280, seed: 7, reference: None, look: Look::default() }
     }
 
     fn quick(url: &str) -> Comfy {
@@ -235,6 +234,22 @@ mod tests {
         assert_eq!(w["10"]["inputs"]["image"], "colouring-ref-7.png");
         assert_eq!(w["7"]["inputs"]["latent_image"], json!(["12", 0]));
         assert!(w["7"]["inputs"]["denoise"].as_f64().unwrap() < 1.0);
+    }
+
+    #[test]
+    fn the_reference_denoise_follows_the_level_and_the_closeness_choice() {
+        let denoise = |detail, close| {
+            let job = Job { reference: Some(std::sync::Arc::new(vec![1])), look: Look { detail, close }, ..job() };
+            Comfy::new("x").workflow_from(&job, Some("r.png"))["7"]["inputs"]["denoise"].as_f64().unwrap() as f32
+        };
+        assert_eq!(denoise(Detail::Medium, true), Look { detail: Detail::Medium, close: true }.denoise());
+        assert!(denoise(Detail::Medium, true) < denoise(Detail::Medium, false));
+        assert!(denoise(Detail::VeryDetailed, false) < denoise(Detail::VerySimple, false));
+        for d in Detail::ALL {
+            for close in [true, false] {
+                assert!((0.55..=0.75).contains(&denoise(d, close)));
+            }
+        }
     }
 
     #[test]

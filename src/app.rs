@@ -1,5 +1,6 @@
 use crate::backend::{ImageBackend, Kind};
 use crate::clean::Paper;
+use crate::detail::Detail;
 use crate::jobs::{Job, Jobs, Page, Step};
 use crate::plan::PAGES;
 use crate::settings::{self, Listen, Settings};
@@ -16,6 +17,7 @@ use std::time::{Duration, Instant};
 
 const HOLD_TO_OPEN: f32 = 1.5;
 const BIG: f32 = 64.0;
+const DETAIL_ROW_H: f32 = 62.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Screen {
@@ -191,7 +193,7 @@ impl App {
             return;
         }
         let reference = self.reference.take().map(|(png, _)| png);
-        match self.jobs.start(self.settings.llm(), self.backend(), self.settings.paper(), request, reference) {
+        match self.jobs.start(self.settings.llm(), self.backend(), self.settings.paper(), request, reference, self.settings.look()) {
             Ok(id) => self.show_job(ctx, id),
             Err(e) => self.say(false, format!("could not keep these pages: {e}")),
         }
@@ -957,7 +959,56 @@ impl App {
             let text = self.request.clone();
             self.start(&ctx, text);
         }
-        self.reference_row(ui, &ctx, pos2(avail.center().x, field_rect.bottom() + 18.0));
+        let detail_top = field_rect.bottom() + 16.0;
+        self.detail_row(ui, pos2(avail.center().x, detail_top));
+        self.reference_row(ui, &ctx, pos2(avail.center().x, detail_top + DETAIL_ROW_H + 16.0));
+    }
+
+    fn save_settings(&mut self) {
+        if let Err(e) = self.settings.save(&settings::settings_path()) {
+            self.say(false, format!("could not save settings: {e}"));
+        }
+    }
+
+    pub fn set_detail(&mut self, detail: Detail) {
+        if self.settings.detail != detail {
+            self.settings.detail = detail;
+            self.save_settings();
+        }
+    }
+
+    fn detail_row(&mut self, ui: &mut Ui, top: Pos2) {
+        let cell = vec2(64.0, 40.0);
+        let gap = 8.0;
+        let total = cell.x * 5.0 + gap * 4.0;
+        let left = top.x - total / 2.0;
+        let current = self.settings.detail;
+        let caption = Rect::from_min_size(pos2(left, top.y), vec2(total, 18.0));
+        let g = egui_bench::text::lay(ui, egui_bench::text::caps(&format!("how detailed: {}", current.label()), legend_font(13.0), LEGEND, 1.5), total);
+        ui.painter().galley(pos2(caption.center().x - g.size().x / 2.0, caption.top()), g, LEGEND);
+        for (i, level) in Detail::ALL.iter().enumerate() {
+            let rect = Rect::from_min_size(pos2(left + i as f32 * (cell.x + gap), top.y + 22.0), cell);
+            let id = egui::Id::unique(("detail", i));
+            let resp = ui.interact(rect, id, Sense::click());
+            let picked = i <= current.index();
+            let exact = *level == current;
+            let (fill, edge, ink) = if picked { (READOUT.gamma_multiply(if exact { 0.9 } else { 0.35 }), READOUT, if exact { WELL } else { READOUT }) } else { (WELL, if hot(&resp, true) { VALUE } else { ETCH }, LEGEND) };
+            let p = ui.painter();
+            p.rect_filled(rect, 2.0, fill);
+            p.rect_stroke(rect, 2.0, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+            let lines = i + 1;
+            let span = rect.height() - 12.0;
+            for k in 0..lines {
+                let y = rect.top() + 6.0 + span * (k as f32 + 0.5) / lines as f32;
+                p.line_segment([pos2(rect.left() + 12.0, y), pos2(rect.right() - 12.0, y)], Stroke::new(if lines > 3 { 1.5 } else { 3.0 }, ink));
+            }
+            if hot(&resp, true) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                self.set_detail(*level);
+            }
+        }
     }
 
     fn reference_row(&mut self, ui: &mut Ui, ctx: &egui::Context, top: Pos2) {
@@ -980,9 +1031,15 @@ impl App {
                 let text = Rect::from_min_size(pos2(thumb.right() + 14.0, top.y), vec2(150.0, 64.0));
                 let g = egui_bench::text::lay(ui, egui_bench::text::caps("drawing from this picture", legend_font(12.0), READOUT, 1.0), 150.0);
                 ui.painter().galley(pos2(text.left(), text.center().y - g.size().y / 2.0), g, READOUT);
-                let key = Rect::from_min_size(pos2(text.right() + 10.0, top.y + 12.0), vec2(110.0, 40.0));
+                let key = Rect::from_min_size(pos2(text.right() + 10.0, top.y), vec2(110.0, 30.0));
                 if big_button(ui, key, "take off", FAULT, false, true).clicked() {
                     self.reference = None;
+                }
+                let close = self.settings.close;
+                let mode = Rect::from_min_size(pos2(text.right() + 10.0, top.y + 34.0), vec2(150.0, 30.0));
+                if sized_button(ui, mode, if close { "stay close" } else { "just inspired" }, VALUE, false, true, 13.0).clicked() {
+                    self.settings.close = !close;
+                    self.save_settings();
                 }
             }
             None => {
@@ -1102,6 +1159,9 @@ fn settings_form(ui: &mut Ui, s: &mut Settings) {
         });
         row(ui, "model", |ui| {
             field(ui, &mut s.llm_model, "code");
+        });
+        row(ui, "sees pictures", |ui| {
+            field(ui, &mut s.vision_model, "same as model");
         });
     });
     ui.add_space(8.0);

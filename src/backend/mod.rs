@@ -18,6 +18,7 @@ pub struct Job {
     pub height: u32,
     pub seed: u64,
     pub reference: Option<std::sync::Arc<Vec<u8>>>,
+    pub look: crate::detail::Look,
 }
 
 #[async_trait]

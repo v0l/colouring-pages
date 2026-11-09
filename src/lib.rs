@@ -1,6 +1,7 @@
 pub mod app;
 pub mod backend;
 pub mod clean;
+pub mod detail;
 pub mod export;
 pub mod jobs;
 #[cfg(test)]

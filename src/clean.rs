@@ -1,3 +1,4 @@
+use crate::detail::Detail;
 use image::{GrayImage, Luma, imageops::FilterType};
 
 pub const DPI: u32 = 200;
@@ -130,12 +131,12 @@ fn remove_regions(img: &mut GrayImage, ink: bool, smaller_than: usize) {
     }
 }
 
-pub fn clean(source: &GrayImage) -> GrayImage {
+pub fn clean(source: &GrayImage, detail: Detail) -> GrayImage {
     let mut img = threshold(source, otsu(source));
     let area = (img.width() * img.height()) as f32;
-    let speck = ((area / 1_000_000.0) * 30.0).max(8.0) as usize;
+    let speck = (((area / 1_000_000.0) * 30.0 * detail.speck()) as usize).max(2);
     remove_regions(&mut img, true, speck);
-    remove_regions(&mut img, false, (speck / 3).max(4));
+    remove_regions(&mut img, false, (speck / 3).max(2));
     img
 }
 
@@ -175,13 +176,13 @@ pub fn autocrop(img: &GrayImage) -> GrayImage {
     image::imageops::crop_imm(img, x0, y0, x1 - x0 + 1, y1 - y0 + 1).to_image()
 }
 
-pub fn make_page(png: &[u8], paper: Paper) -> Result<GrayImage, String> {
+pub fn make_page(png: &[u8], paper: Paper, detail: Detail) -> Result<GrayImage, String> {
     let decoded = image::load_from_memory(png).map_err(|e| format!("the picture could not be read: {e}"))?;
     let gray = decoded.to_luma8();
     if gray.width() < 8 || gray.height() < 8 {
         return Err("the picture was too small".into());
     }
-    let cleaned = clean(&gray);
+    let cleaned = clean(&gray, detail);
     if ink_ratio(&cleaned) < MIN_INK {
         return Err("the page came out empty".into());
     }
@@ -230,7 +231,7 @@ mod tests {
     fn a_grey_image_becomes_only_zero_and_255() {
         let grey = grey_test_image();
         assert!(!is_black_and_white(&grey));
-        let out = clean(&grey);
+        let out = clean(&grey, Detail::Medium);
         assert!(is_black_and_white(&out));
         let ink = ink_ratio(&out);
         assert!(ink > 0.01 && ink < 0.2, "the circle survives: {ink}");
@@ -239,7 +240,7 @@ mod tests {
     #[test]
     fn every_pixel_of_a_fitted_page_is_zero_or_255() {
         for paper in [Paper::A4, Paper::Letter] {
-            let page = fit(&clean(&grey_test_image()), paper);
+            let page = fit(&clean(&grey_test_image(), Detail::Medium), paper);
             assert!(is_black_and_white(&page), "{paper:?}");
         }
     }
@@ -293,7 +294,7 @@ mod tests {
         for (x, y) in [(50, 50), (51, 50), (50, 51), (550, 100)] {
             img.put_pixel(x, y, Luma([0]));
         }
-        let out = clean(&img);
+        let out = clean(&img, Detail::Medium);
         assert_eq!(out.get_pixel(50, 50).0[0], 255);
         assert_eq!(out.get_pixel(550, 100).0[0], 255);
         assert_eq!(out.get_pixel(300, 302).0[0], 0);
@@ -308,9 +309,21 @@ mod tests {
             }
         }
         img.put_pixel(300, 305, Luma([255]));
-        let out = clean(&img);
+        let out = clean(&img, Detail::Medium);
         assert_eq!(out.get_pixel(300, 305).0[0], 0);
         assert_eq!(out.get_pixel(5, 5).0[0], 255);
+    }
+
+    #[test]
+    fn one_pixel_lines_survive_at_the_highest_level_and_not_at_the_lowest_specks() {
+        let mut img = GrayImage::from_pixel(1200, 1600, Luma([255]));
+        for x in 200..260 {
+            img.put_pixel(x, 800, Luma([0]));
+        }
+        let fine = clean(&img, Detail::VeryDetailed);
+        assert!((200..260).all(|x| fine.get_pixel(x, 800).0[0] == 0));
+        let bold = clean(&img, Detail::VerySimple);
+        assert!(bold.pixels().all(|p| p.0[0] == 255));
     }
 
     #[test]
@@ -327,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_blank_page_stays_blank() {
-        let out = clean(&GrayImage::from_pixel(100, 100, Luma([250])));
+        let out = clean(&GrayImage::from_pixel(100, 100, Luma([250])), Detail::Medium);
         assert!(out.pixels().all(|p| p.0[0] == 255));
     }
 
@@ -342,7 +355,7 @@ mod tests {
             }
         }
         let png = encode_png(&img).unwrap();
-        assert_eq!(make_page(&png, Paper::A4).unwrap_err(), "the page came out empty");
+        assert_eq!(make_page(&png, Paper::A4, Detail::Medium).unwrap_err(), "the page came out empty");
     }
 
     #[test]
@@ -356,7 +369,7 @@ mod tests {
                 }
             }
         }
-        let page = make_page(&encode_png(&img).unwrap(), Paper::A4).unwrap();
+        let page = make_page(&encode_png(&img).unwrap(), Paper::A4, Detail::Medium).unwrap();
         let (mut minx, mut maxx) = (u32::MAX, 0);
         for (x, _, p) in page.enumerate_pixels() {
             if p.0[0] == 0 {
@@ -371,9 +384,9 @@ mod tests {
     #[test]
     fn make_page_reads_a_png_and_rejects_junk() {
         let png = encode_png(&grey_test_image()).unwrap();
-        let page = make_page(&png, Paper::Letter).unwrap();
+        let page = make_page(&png, Paper::Letter, Detail::Medium).unwrap();
         assert_eq!(page.dimensions(), Paper::Letter.pixels());
         assert!(is_black_and_white(&page));
-        assert!(make_page(b"not a picture", Paper::A4).is_err());
+        assert!(make_page(b"not a picture", Paper::A4, Detail::Medium).is_err());
     }
 }
