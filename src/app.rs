@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 const HOLD_TO_OPEN: f32 = 1.5;
 const BIG: f32 = 64.0;
-const DETAIL_ROW_H: f32 = 62.0;
+const DETAIL_ROW_H: f32 = 80.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Screen {
@@ -978,7 +978,7 @@ impl App {
     }
 
     fn detail_row(&mut self, ui: &mut Ui, top: Pos2) {
-        let cell = vec2(64.0, 40.0);
+        let cell = vec2(76.0, 54.0);
         let gap = 8.0;
         let total = cell.x * 5.0 + gap * 4.0;
         let left = top.x - total / 2.0;
@@ -1031,13 +1031,13 @@ impl App {
                 let text = Rect::from_min_size(pos2(thumb.right() + 14.0, top.y), vec2(150.0, 64.0));
                 let g = egui_bench::text::lay(ui, egui_bench::text::caps("drawing from this picture", legend_font(12.0), READOUT, 1.0), 150.0);
                 ui.painter().galley(pos2(text.left(), text.center().y - g.size().y / 2.0), g, READOUT);
-                let key = Rect::from_min_size(pos2(text.right() + 10.0, top.y), vec2(110.0, 30.0));
-                if sized_button(ui, key, "take off", FAULT, false, true, 13.0).clicked() {
+                let key = Rect::from_min_size(pos2(text.right() + 10.0, top.y - 14.0), vec2(150.0, 46.0));
+                if sized_button(ui, key, "take off", FAULT, false, true, 15.0).clicked() {
                     self.reference = None;
                 }
                 let close = self.settings.close;
-                let mode = Rect::from_min_size(pos2(text.right() + 10.0, top.y + 34.0), vec2(150.0, 30.0));
-                if sized_button(ui, mode, if close { "stay close" } else { "just inspired" }, VALUE, false, true, 13.0).clicked() {
+                let mode = Rect::from_min_size(pos2(text.right() + 10.0, top.y + 38.0), vec2(150.0, 46.0));
+                if sized_button(ui, mode, if close { "stay close" } else { "just inspired" }, VALUE, false, true, 15.0).clicked() {
                     self.settings.close = !close;
                     self.save_settings();
                 }
