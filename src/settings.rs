@@ -67,7 +67,7 @@ impl Settings {
             close: false,
             paper: Paper::A4.id().into(),
             listen: if cfg!(target_os = "android") { Listen::Server } else { Listen::Here },
-            whisper_model: egui_bench::voice::DEFAULT_MODEL.into(),
+            whisper_model: agent_voice::voice::DEFAULT_MODEL.into(),
             speech_url: String::new(),
             speech_key: String::new(),
             speech_model: String::new(),

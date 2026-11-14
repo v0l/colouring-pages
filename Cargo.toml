@@ -11,7 +11,7 @@ crate-type = ["lib", "cdylib"]
 
 [features]
 default = ["local-speech"]
-local-speech = ["egui_bench/speech"]
+local-speech = ["agent-voice/speech"]
 
 [[bin]]
 name = "colouring-pages"
@@ -19,7 +19,8 @@ path = "src/main.rs"
 
 [dependencies]
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
-egui_bench = { version = "0.9.4", features = ["agent"] }
+egui_bench = "0.9.8"
+agent-voice = { git = "https://github.com/v0l/agentbench" }
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

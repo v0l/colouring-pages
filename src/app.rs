@@ -1174,7 +1174,7 @@ fn settings_form(ui: &mut Ui, s: &mut Settings) {
         });
         if s.listen == Listen::Here {
             row(ui, "model", |ui| {
-                choice(ui, "whisper", &mut s.whisper_model, egui_bench::voice::LOCAL_MODELS.iter().map(|m| (m.0.to_string(), format!("{} ({} MB)", m.2, m.3))));
+                choice(ui, "whisper", &mut s.whisper_model, agent_voice::voice::LOCAL_MODELS.iter().map(|m| (m.0.to_string(), format!("{} ({} MB)", m.2, m.3))));
             });
         } else {
             row(ui, "address", |ui| {

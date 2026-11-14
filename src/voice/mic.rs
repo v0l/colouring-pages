@@ -30,7 +30,7 @@ enum State {
 }
 
 #[cfg(local_speech)]
-type Loaded = Arc<Mutex<Option<egui_bench::speech::Transcriber>>>;
+type Loaded = Arc<Mutex<Option<agent_voice::speech::Transcriber>>>;
 #[cfg(not(local_speech))]
 type Loaded = ();
 
@@ -173,7 +173,7 @@ fn dirs_shared() -> Option<std::path::PathBuf> {
     let own = crate::settings::data_dir().join("models");
     let theirs = std::env::var_os("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".local/share/agentbench/models"))?;
-    let model = egui_bench::voice::DEFAULT_MODEL;
+    let model = agent_voice::voice::DEFAULT_MODEL;
     (!own.join(model).exists() && theirs.join(model).join("model.safetensors").exists()).then_some(theirs)
 }
 
@@ -186,11 +186,11 @@ fn read_here(
     loaded: &Loaded,
 ) -> Result<String, String> {
     let mut slot = loaded.lock().unwrap_or_else(|e| e.into_inner());
-    let t = slot.get_or_insert_with(|| egui_bench::speech::Transcriber::new(models_dir()));
-    let id = if egui_bench::voice::model(&settings.model).is_some() {
+    let t = slot.get_or_insert_with(|| agent_voice::speech::Transcriber::new(models_dir()));
+    let id = if agent_voice::voice::model(&settings.model).is_some() {
         settings.model.as_str()
     } else {
-        egui_bench::voice::DEFAULT_MODEL
+        agent_voice::voice::DEFAULT_MODEL
     };
     if !t.installed(id) {
         t.download(id, &|p| {
@@ -216,7 +216,7 @@ fn read_here(
 }
 
 pub fn read_on_server(settings: &Settings, pcm: &[f32]) -> Result<String, String> {
-    egui_bench::voice::Server { url: settings.url.clone(), key: settings.key.clone() }
+    agent_voice::voice::Server { url: settings.url.clone(), key: settings.key.clone() }
         .transcribe(pcm, &settings.server_model)
 }
 
@@ -226,7 +226,7 @@ pub fn clip_path() -> std::path::PathBuf {
 
 fn open_clip(path: &std::path::Path) -> Result<Take, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (pcm, rate) = egui_bench::voice::read_wav(&bytes)?;
+    let (pcm, rate) = agent_voice::voice::read_wav(&bytes)?;
     let heard = Arc::new(Mutex::new(Vec::new()));
     let peak = Arc::new(AtomicU32::new(0));
     push(&pcm, 1, usize::MAX, &heard, &peak);
@@ -329,7 +329,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clip.wav");
         let tone: Vec<f32> = (0..8000).map(|i| 0.4 * (i as f32 * 0.05).sin()).collect();
-        std::fs::write(&path, egui_bench::voice::wav_bytes(&tone, 16_000)).unwrap();
+        std::fs::write(&path, agent_voice::voice::wav_bytes(&tone, 16_000)).unwrap();
         let take = open_clip(&path).unwrap();
         assert_eq!(take.rate, 16_000);
         let heard = take.heard.lock().unwrap().len();

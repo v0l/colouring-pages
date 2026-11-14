@@ -2,7 +2,7 @@ mod mic;
 
 pub use mic::{Said, Voice};
 
-pub use egui_bench::voice::audio::{to_whisper_rate, wav_bytes};
+pub use agent_voice::voice::audio::{to_whisper_rate, wav_bytes};
 
 pub const MIN_SECONDS: f32 = 0.4;
 pub const MIN_PEAK: f32 = 0.005;
