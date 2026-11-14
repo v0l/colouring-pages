@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 egui_bench = "0.10.0"
-agent-voice = { git = "https://github.com/v0l/agentbench", rev = "ed1c84e136b39f3086f0747ea8d737035ae21a15" }
+agent-voice = { git = "https://github.com/v0l/agentbench", rev = "887da2d11ede7b9b3c2755e390c2934fdb3f8924" }
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
