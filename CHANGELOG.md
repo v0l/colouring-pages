@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- An age slider (2 to 12, teen, adult) replaces the detail row and shapes the wording, detail and subject style.
+
 ## [0.1.1] - 2026-11-14
 
 - Speech comes from the agent-voice crate.
