@@ -24,7 +24,7 @@ impl OpenRouter {
 
     pub fn request(&self, job: &Job) -> Value {
         let aspect = if job.width <= job.height { "3:4" } else { "4:3" };
-        let detail = job.look.detail;
+        let detail = job.look.age;
         let words = format!("Draw this image: {}", style::with_negative_inline(&job.prompt, detail));
         let content = match &job.reference {
             Some(png) => json!([
@@ -114,11 +114,11 @@ impl ImageBackend for OpenRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detail::{Detail, Look};
+    use crate::detail::{Age, Look};
     use crate::fake::{Reply, serve};
 
     fn job() -> Job {
-        Job { prompt: style::finish("a cat", Detail::Medium), negative: style::negative(Detail::Medium), width: 960, height: 1280, seed: 1, reference: None, look: Look::default() }
+        Job { prompt: style::finish("a cat", Age::default()), negative: style::negative(Age::default()), width: 960, height: 1280, seed: 1, reference: None, look: Look::default() }
     }
 
     fn data_url(bytes: &[u8]) -> String {
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn staying_close_changes_the_reference_instruction() {
-        let job = Job { reference: Some(std::sync::Arc::new(vec![1])), look: Look { detail: Detail::Medium, close: true }, ..job() };
+        let job = Job { reference: Some(std::sync::Arc::new(vec![1])), look: Look { age: Age::default(), close: true }, ..job() };
         let r = OpenRouter::new("", "k", "").request(&job);
         assert!(r["messages"][0]["content"][0]["text"].as_str().unwrap().contains("Stay close"));
     }

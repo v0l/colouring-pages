@@ -1,6 +1,6 @@
 use crate::backend::{Comfy, ImageBackend, Kind, OpenRouter};
 use crate::clean::Paper;
-use crate::detail::{Detail, Look};
+use crate::detail::{Age, Detail, Look};
 use crate::llm::Llm;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -29,7 +29,9 @@ pub struct Settings {
     pub llm_key: String,
     pub llm_model: String,
     pub vision_model: String,
-    pub detail: Detail,
+    pub age: Age,
+    #[serde(skip_serializing)]
+    pub detail: Option<Detail>,
     pub close: bool,
     pub paper: String,
     pub listen: Listen,
@@ -63,7 +65,8 @@ impl Settings {
             llm_key: String::new(),
             llm_model: DEFAULT_LLM_MODEL.into(),
             vision_model: DEFAULT_VISION_MODEL.into(),
-            detail: Detail::default(),
+            age: Age::default(),
+            detail: None,
             close: false,
             paper: Paper::A4.id().into(),
             listen: if cfg!(target_os = "android") { Listen::Server } else { Listen::Here },
@@ -87,7 +90,7 @@ impl Settings {
     }
 
     pub fn look(&self) -> Look {
-        Look { detail: self.detail, close: self.close }
+        Look { age: self.age, close: self.close }
     }
 
     pub fn image_backend(&self) -> Box<dyn ImageBackend> {
@@ -113,10 +116,15 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> Settings {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+        let Some(text) = std::fs::read_to_string(path).ok() else { return Settings::default() };
+        let Ok(mut settings) = serde_json::from_str::<Settings>(&text) else { return Settings::default() };
+        let has_age = serde_json::from_str::<serde_json::Value>(&text).map(|v| v.get("age").is_some()).unwrap_or(false);
+        if let Some(detail) = settings.detail.take() {
+            if !has_age {
+                settings.age = Age::from_detail(detail);
+            }
+        }
+        settings
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -214,16 +222,34 @@ mod tests {
     }
 
     #[test]
-    fn the_detail_level_and_closeness_are_remembered() {
+    fn the_age_and_closeness_are_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let mut s = Settings::default();
-        s.detail = Detail::VeryDetailed;
+        s.age = Age::Adult;
         s.close = true;
         s.save(&path).unwrap();
         let back = Settings::load(&path);
-        assert_eq!(back.look(), Look { detail: Detail::VeryDetailed, close: true });
-        assert_eq!(Settings::default().look().detail, Detail::Medium);
+        assert_eq!(back.look(), Look { age: Age::Adult, close: true });
+        assert_eq!(Settings::default().look().age, Age::Years(7));
+        s.age = Age::Years(4);
+        s.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).age, Age::Years(4));
+    }
+
+    #[test]
+    fn an_old_settings_file_with_a_detail_level_maps_to_an_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.json");
+        for (detail, age) in [("VerySimple", Age::Years(3)), ("Medium", Age::Years(7)), ("VeryDetailed", Age::Teen)] {
+            std::fs::write(&path, format!(r#"{{"detail":"{detail}","close":true}}"#)).unwrap();
+            let s = Settings::load(&path);
+            assert_eq!(s.age, age);
+            assert!(s.close);
+            assert_eq!(s.detail, None);
+        }
+        std::fs::write(&path, r#"{"detail":"VerySimple","age":"Adult"}"#).unwrap();
+        assert_eq!(Settings::load(&path).age, Age::Adult);
     }
 
     #[test]

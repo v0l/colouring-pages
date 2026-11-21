@@ -1,6 +1,6 @@
 use colouring_pages::backend::{Comfy, ImageBackend, OpenRouter};
 use colouring_pages::clean::{Paper, is_black_and_white};
-use colouring_pages::detail::{Detail, Look};
+use colouring_pages::detail::{Age, Look};
 use colouring_pages::llm::Llm;
 use colouring_pages::pipeline::{Event, run};
 use colouring_pages::settings::Settings;
@@ -24,7 +24,12 @@ fn a_request_gives_four_clean_pages_on_real_services() {
     let out = std::path::PathBuf::from(std::env::var("OUT").unwrap_or_else(|_| "shots/real".into()));
     std::fs::create_dir_all(&out).unwrap();
     let request = std::env::var("REQUEST").unwrap_or_else(|_| "cute christmas cats".into());
-    let detail = Detail::from_index(std::env::var("DETAIL").ok().and_then(|d| d.parse().ok()).unwrap_or(2));
+    let age = match std::env::var("AGE").as_deref() {
+        Ok("teen") => Age::Teen,
+        Ok("adult") => Age::Adult,
+        Ok(n) => Age::years(n.parse().unwrap_or(7)),
+        Err(_) => Age::default(),
+    };
     let close = std::env::var("CLOSE").is_ok();
     let reference = std::env::var("REFERENCE").ok().map(|p| {
         let bytes = std::fs::read(p).unwrap();
@@ -39,7 +44,7 @@ fn a_request_gives_four_clean_pages_on_real_services() {
         });
         l.lock().unwrap().push(e)
     });
-    colouring_pages::net::runtime().block_on(run(llm, backend, Paper::A4, request, reference, Look { detail, close }, sink));
+    colouring_pages::net::runtime().block_on(run(llm, backend, Paper::A4, request, reference, Look { age, close }, sink));
     let events = log.lock().unwrap();
     let mut n = 0;
     for e in events.iter() {

@@ -1,5 +1,5 @@
 use colouring_pages::backend::{Comfy, ImageBackend, Job, generation_size};
-use colouring_pages::detail::Detail;
+use colouring_pages::detail::{Age, Detail};
 use colouring_pages::clean::{Paper, clean, otsu};
 
 #[test]
@@ -10,7 +10,7 @@ fn raw_flux_output_for_one_prompt() {
     let out = std::env::var("OUT").unwrap_or_else(|_| "shots/raw".into());
     std::fs::create_dir_all(&out).unwrap();
     let (width, height) = generation_size(0.707);
-    let job = Job { prompt: colouring_pages::style::finish(&prompt, Detail::Medium), negative: String::new(), width, height, seed: std::env::var("SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(5), reference: None, look: Default::default() };
+    let job = Job { prompt: colouring_pages::style::finish(&prompt, Age::default()), negative: String::new(), width, height, seed: std::env::var("SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(5), reference: None, look: Default::default() };
     let png = colouring_pages::net::runtime().block_on(Comfy::new(&url).generate(&job)).unwrap();
     std::fs::write(format!("{out}/raw.png"), &png).unwrap();
     let gray = image::load_from_memory(&png).unwrap().to_luma8();

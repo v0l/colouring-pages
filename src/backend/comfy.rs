@@ -166,7 +166,7 @@ impl ImageBackend for Comfy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detail::{Detail, Look};
+    use crate::detail::{Age, Detail, Look};
     use crate::fake::{Reply, serve};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -239,15 +239,15 @@ mod tests {
     #[test]
     fn the_reference_denoise_follows_the_level_and_the_closeness_choice() {
         let denoise = |detail, close| {
-            let job = Job { reference: Some(std::sync::Arc::new(vec![1])), look: Look { detail, close }, ..job() };
+            let job = Job { reference: Some(std::sync::Arc::new(vec![1])), look: Look { age: Age::from_detail(detail), close }, ..job() };
             Comfy::new("x").workflow_from(&job, Some("r.png"))["7"]["inputs"]["denoise"].as_f64().unwrap() as f32
         };
-        assert_eq!(denoise(Detail::Medium, true), Look { detail: Detail::Medium, close: true }.denoise());
+        assert_eq!(denoise(Detail::Medium, true), Look { age: Age::from_detail(Detail::Medium), close: true }.denoise());
         assert!(denoise(Detail::Medium, true) < denoise(Detail::Medium, false));
         assert!(denoise(Detail::VeryDetailed, false) < denoise(Detail::VerySimple, false));
         for d in Detail::ALL {
             for close in [true, false] {
-                assert!((0.55..=0.75).contains(&denoise(d, close)));
+                assert!((0.5..=0.75).contains(&denoise(d, close)));
             }
         }
     }

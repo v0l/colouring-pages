@@ -1,6 +1,6 @@
 use crate::backend::{ImageBackend, Kind};
 use crate::clean::Paper;
-use crate::detail::Detail;
+use crate::detail::Age;
 use crate::jobs::{Job, Jobs, Page, Step};
 use crate::plan::PAGES;
 use crate::settings::{self, Listen, Settings};
@@ -960,7 +960,7 @@ impl App {
             self.start(&ctx, text);
         }
         let detail_top = field_rect.bottom() + 16.0;
-        self.detail_row(ui, pos2(avail.center().x, detail_top));
+        self.age_slider(ui, pos2(avail.center().x, detail_top));
         self.reference_row(ui, &ctx, pos2(avail.center().x, detail_top + DETAIL_ROW_H + 16.0));
     }
 
@@ -970,44 +970,50 @@ impl App {
         }
     }
 
-    pub fn set_detail(&mut self, detail: Detail) {
-        if self.settings.detail != detail {
-            self.settings.detail = detail;
+    pub fn set_age(&mut self, age: Age) {
+        if self.settings.age != age {
+            self.settings.age = age;
             self.save_settings();
         }
     }
 
-    fn detail_row(&mut self, ui: &mut Ui, top: Pos2) {
-        let cell = vec2(76.0, 54.0);
-        let gap = 8.0;
-        let total = cell.x * 5.0 + gap * 4.0;
+    fn age_slider(&mut self, ui: &mut Ui, top: Pos2) {
+        let total = 520.0_f32.min(ui.available_width() - 24.0);
         let left = top.x - total / 2.0;
-        let current = self.settings.detail;
+        let current = self.settings.age;
         let caption = Rect::from_min_size(pos2(left, top.y), vec2(total, 18.0));
-        let g = egui_bench::text::lay(ui, egui_bench::text::caps(&format!("how detailed: {}", current.label()), legend_font(13.0), LEGEND, 1.5), total);
+        let g = egui_bench::text::lay(ui, egui_bench::text::caps(&format!("who is it for: {}", current.label()), legend_font(13.0), LEGEND, 1.5), total);
         ui.painter().galley(pos2(caption.center().x - g.size().x / 2.0, caption.top()), g, LEGEND);
-        for (i, level) in Detail::ALL.iter().enumerate() {
-            let rect = Rect::from_min_size(pos2(left + i as f32 * (cell.x + gap), top.y + 22.0), cell);
-            let id = egui::Id::unique(("detail", i));
-            let resp = ui.interact(rect, id, Sense::click());
-            let picked = i <= current.index();
-            let exact = *level == current;
-            let (fill, edge, ink) = if picked { (READOUT.gamma_multiply(if exact { 0.9 } else { 0.35 }), READOUT, if exact { WELL } else { READOUT }) } else { (WELL, if hot(&resp, true) { VALUE } else { ETCH }, LEGEND) };
-            let p = ui.painter();
-            p.rect_filled(rect, 2.0, fill);
-            p.rect_stroke(rect, 2.0, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-            let lines = i + 1;
-            let span = rect.height() - 12.0;
-            for k in 0..lines {
-                let y = rect.top() + 6.0 + span * (k as f32 + 0.5) / lines as f32;
-                p.line_segment([pos2(rect.left() + 12.0, y), pos2(rect.right() - 12.0, y)], Stroke::new(if lines > 3 { 1.5 } else { 3.0 }, ink));
-            }
-            if hot(&resp, true) {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            if resp.clicked() {
-                self.set_detail(*level);
-            }
+        let track = Rect::from_min_size(pos2(left, top.y + 26.0), vec2(total, 40.0));
+        let resp = ui.interact(track, egui::Id::new("age_slider"), Sense::click_and_drag());
+        let steps = Age::COUNT - 1;
+        let x_of = |i: usize| track.left() + 10.0 + (track.width() - 20.0) * i as f32 / steps as f32;
+        if let Some(p) = resp.interact_pointer_pos() {
+            let t = ((p.x - track.left() - 10.0) / (track.width() - 20.0)).clamp(0.0, 1.0);
+            self.set_age(Age::from_index((t * steps as f32).round() as usize));
+        }
+        let current = self.settings.age;
+        let p = ui.painter();
+        let y = track.top() + 14.0;
+        p.line_segment([pos2(x_of(0), y), pos2(x_of(steps), y)], Stroke::new(3.0, ETCH));
+        p.line_segment([pos2(x_of(0), y), pos2(x_of(current.index()), y)], Stroke::new(3.0, READOUT));
+        for i in 0..=steps {
+            let on = i <= current.index();
+            p.circle_filled(pos2(x_of(i), y), 3.0, if on { READOUT } else { ETCH });
+            let text = match Age::from_index(i) {
+                Age::Years(n) => n.to_string(),
+                Age::Teen => "teen".into(),
+                Age::Adult => "adult".into(),
+            };
+            let ink = if i == current.index() { VALUE } else { LEGEND };
+            let size = if text.len() > 2 { 9.0 } else { 12.0 };
+            let g = p.layout_no_wrap(text, legend_font(size), ink);
+            p.galley(pos2(x_of(i) - g.size().x / 2.0, y + 14.0), g, ink);
+        }
+        p.circle_filled(pos2(x_of(current.index()), y), 9.0, READOUT);
+        p.circle_stroke(pos2(x_of(current.index()), y), 9.0, Stroke::new(2.0, WELL));
+        if hot(&resp, true) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
     }
 

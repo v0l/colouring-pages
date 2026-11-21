@@ -1,4 +1,4 @@
-use crate::detail::Detail;
+use crate::detail::{Age, Detail};
 use crate::llm::{Llm, json_object};
 use crate::style::kid_safe;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,8 @@ pub struct Plan {
     pub ideas: Vec<String>,
     #[serde(default)]
     pub detail: Detail,
+    #[serde(default)]
+    pub age: Age,
     #[serde(default)]
     pub picture: Option<String>,
     pub softened: Option<String>,
@@ -37,7 +39,7 @@ impl std::fmt::Display for PlanError {
 
 pub const REFUSAL: &str = "Let's colour something else. How about animals, space or a castle?";
 
-pub const PLAN_SYSTEM: &str = r#"You help a child get printable colouring pages. The child's request was spoken, so it may be badly transcribed. Turn it into a plan.
+const PLAN_HEAD: &str = r#"You help someone get printable colouring pages. The request was spoken, so it may be badly transcribed. Turn it into a plan.
 
 Reply with one JSON object and nothing else:
 {
@@ -52,30 +54,38 @@ Reply with one JSON object and nothing else:
 }
 
 Rules:
-- Exactly 4 ideas. Each is ONE simple scene a child can colour in, one sentence, concrete, no text or words in the picture. The 4 scenes must differ from each other.
-- Everything must be suitable for children aged 2 to 10. If the request is only partly suitable, drop the unsuitable part, make the ideas friendly, and say what you changed in "softened".
-- If nothing suitable can be made (violence, weapons, nudity, drugs, hate, anything scary or adult), set "safe" to false, give a short kind "reason" for a child, and leave ideas empty.
-- You are told how detailed the pages must be. Write ideas that fit that level: few objects at the low levels, a busy scene at the high levels.
+- Exactly 4 ideas. Each is ONE scene, one sentence, concrete, no text or words in the picture. The 4 scenes must differ from each other.
+- You are told who will colour the pages and how detailed they must be. Write ideas that fit that person and level.
+- Everything must stay free of violence, weapons, nudity, drugs, hate and gore, at every age. If the request is only partly acceptable, drop that part, keep the ideas friendly, and say what you changed in "softened".
+- If nothing acceptable can be made, set "safe" to false, give a short kind "reason", and leave ideas empty.
 - When a picture is attached, it is the heart of the request. Describe it in "picture", and make all 4 ideas variations of THAT picture's subject (a different pose, setting, activity or angle for the same subject, keeping its distinctive features), unless the child's words ask for something else. Do not invent an unrelated scene."#;
 
-pub const PROMPT_SYSTEM: &str = r#"You write image prompts for a colouring page generator. You get a list of scene ideas. For each idea write one prompt describing only the scene: the subject, what it is doing, a few simple objects around it, a simple background. Use plain words. Do not describe colours, shading or style, that is added later. No text or letters in the picture.
+pub fn plan_system(age: Age) -> String {
+    format!("{PLAN_HEAD}\n\nThe pages are for {}.", age.audience())
+}
+
+const PROMPT_HEAD: &str = r#"You write image prompts for a colouring page generator. You get a list of scene ideas. For each idea write one prompt describing only the scene: the subject, what it is doing, and the objects and background that fit the level you are given. Use plain words. Do not describe colours, shading or style, that is added later. No text or letters in the picture.
 
 Reply with one JSON object and nothing else:
 { "prompts": ["prompt for idea 1", "prompt for idea 2", ...] }
 
-Exactly one prompt per idea, in the same order. You are told how detailed the scenes must be: fit the number of objects and the background to that level.
+Exactly one prompt per idea, in the same order. You are told who will colour the pages and how detailed the scenes must be: fit the subject treatment, the number of objects and the background to that.
 
 When you are told what an attached picture shows, every prompt must name that same subject with its distinctive features and say how this page varies it (the pose, setting or activity from the idea). Never describe a different subject."#;
 
-pub fn plan_request(request: &str, detail: Detail, has_picture: bool) -> String {
-    let mut out = format!("The child said: \"{}\"\nDetail level: {}.", request.trim().replace('"', "'"), detail.brief());
+pub fn prompt_system(age: Age) -> String {
+    format!("{PROMPT_HEAD}\n\nThe pages are for {}.", age.audience())
+}
+
+pub fn plan_request(request: &str, age: Age, has_picture: bool) -> String {
+    let mut out = format!("The person said: \"{}\"\nAudience: {}.", request.trim().replace('"', "'"), age.brief());
     if has_picture {
         out.push_str("\nA picture is attached. Base every idea on it.");
     }
     out
 }
 
-pub fn parse_plan(raw: &str, request: &str, detail: Detail) -> Result<Plan, PlanError> {
+pub fn parse_plan(raw: &str, request: &str, age: Age) -> Result<Plan, PlanError> {
     let v = json_object(raw).ok_or_else(|| PlanError::Unreadable("the plan was not JSON".into()))?;
     let v = match v {
         Value::Array(_) => return Err(PlanError::Unreadable("the plan was a list".into())),
@@ -123,7 +133,8 @@ pub fn parse_plan(raw: &str, request: &str, detail: Detail) -> Result<Plan, Plan
         subject,
         setting,
         mood,
-        detail,
+        detail: age.detail(),
+        age,
         picture: Some(text(&v, "picture")).filter(|s| !s.is_empty()),
         softened,
     })
@@ -150,7 +161,7 @@ pub fn fit_ideas(mut ideas: Vec<String>, subject: &str) -> Vec<String> {
     ideas
 }
 
-pub fn parse_prompts(raw: &str, ideas: &[String], detail: Detail) -> Result<Vec<String>, String> {
+pub fn parse_prompts(raw: &str, ideas: &[String], age: Age) -> Result<Vec<String>, String> {
     let v = json_object(raw).ok_or_else(|| "the prompts were not JSON".to_string())?;
     let list = match &v {
         Value::Array(a) => Some(a),
@@ -181,19 +192,19 @@ pub fn parse_prompts(raw: &str, ideas: &[String], detail: Detail) -> Result<Vec<
         .iter()
         .enumerate()
         .map(|(i, idea)| match got.get(i) {
-            Some(p) if !p.is_empty() && kid_safe(p) => crate::style::finish(p, detail),
-            _ => crate::style::finish(idea, detail),
+            Some(p) if !p.is_empty() && kid_safe(p) => crate::style::finish(p, age),
+            _ => crate::style::finish(idea, age),
         })
         .collect())
 }
 
 pub fn prompts_request(plan: &Plan) -> String {
     let mut out = format!(
-        "Subject: {}\nSetting: {}\nMood: {}\nDetail level: {}.\n",
+        "Subject: {}\nSetting: {}\nMood: {}\nAudience: {}.\n",
         plan.subject,
         plan.setting,
         plan.mood,
-        plan.detail.brief()
+        plan.age.brief()
     );
     if let Some(picture) = &plan.picture {
         out.push_str(&format!("The attached picture shows: {picture}\n"));
@@ -205,17 +216,17 @@ pub fn prompts_request(plan: &Plan) -> String {
     out
 }
 
-pub async fn make_plan(llm: &Llm, request: &str, detail: Detail, picture: Option<&[u8]>) -> Result<Plan, PlanError> {
+pub async fn make_plan(llm: &Llm, request: &str, age: Age, picture: Option<&[u8]>) -> Result<Plan, PlanError> {
     if !kid_safe(request) {
         return Err(PlanError::Refused(REFUSAL.into()));
     }
     let mut last = String::new();
     for _ in 0..2 {
         let raw = llm
-            .chat_with(PLAN_SYSTEM, &plan_request(request, detail, picture.is_some()), picture)
+            .chat_with(&plan_system(age), &plan_request(request, age, picture.is_some()), picture)
             .await
             .map_err(PlanError::Failed)?;
-        match parse_plan(&raw, request, detail) {
+        match parse_plan(&raw, request, age) {
             Ok(plan) => return Ok(plan),
             Err(PlanError::Unreadable(why)) => last = why,
             Err(e) => return Err(e),
@@ -226,12 +237,12 @@ pub async fn make_plan(llm: &Llm, request: &str, detail: Detail, picture: Option
 
 pub async fn make_prompts(llm: &Llm, plan: &Plan) -> Vec<String> {
     for _ in 0..2 {
-        let Ok(raw) = llm.chat(PROMPT_SYSTEM, &prompts_request(plan)).await else { continue };
-        if let Ok(p) = parse_prompts(&raw, &plan.ideas, plan.detail) {
+        let Ok(raw) = llm.chat(&prompt_system(plan.age), &prompts_request(plan)).await else { continue };
+        if let Ok(p) = parse_prompts(&raw, &plan.ideas, plan.age) {
             return p;
         }
     }
-    plan.ideas.iter().map(|i| crate::style::finish(i, plan.detail)).collect()
+    plan.ideas.iter().map(|i| crate::style::finish(i, plan.age)).collect()
 }
 
 #[cfg(test)]
@@ -243,7 +254,7 @@ mod tests {
 
     const GOOD: &str = r#"{"safe":true,"reason":"","subject":"christmas cats","setting":"a cosy living room","mood":"cheerful","picture":"","softened":"","ideas":["A kitten hanging a bauble on a tree","A cat wearing a santa hat","Two cats wrapping a present","A cat asleep by the fireplace"]}"#;
 
-    const M: Detail = Detail::Medium;
+    const M: Age = Age::Years(7);
 
     fn ideas() -> Vec<String> {
         ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect()
@@ -254,7 +265,7 @@ mod tests {
         let p = parse_plan(GOOD, "cute christmas cats", M).unwrap();
         assert_eq!(p.subject, "christmas cats");
         assert_eq!(p.ideas.len(), 4);
-        assert_eq!(p.detail, M);
+        assert_eq!(p.age, M);
         assert!(p.softened.is_none());
     }
 
@@ -269,7 +280,7 @@ mod tests {
         let p = parse_plan(r#"{"ideas":["one cat","two cats"]}"#, "cats", M).unwrap();
         assert_eq!(p.ideas.len(), PAGES);
         assert_eq!(p.subject, "cats");
-        assert_eq!(p.detail, M);
+        assert_eq!(p.age, M);
         assert_eq!(p.ideas[0], "one cat");
         assert_ne!(p.ideas[2], p.ideas[0]);
     }
@@ -396,7 +407,7 @@ mod tests {
 
     #[test]
     fn the_request_is_quoted_safely() {
-        assert!(plan_request(" say \"hi\" ", M, false).starts_with("The child said: \"say 'hi'\""));
+        assert!(plan_request(" say \"hi\" ", M, false).starts_with("The person said: \"say 'hi'\""));
     }
 
     fn doll_plan() -> String {
@@ -425,13 +436,57 @@ mod tests {
             r#"{"prompts":["a ginger tabby cat chasing a butterfly","a ginger tabby cat asleep","a ginger tabby cat with yarn","a ginger tabby cat at a window"]}"#.into(),
         ]);
         let rt = crate::net::runtime();
-        let plan = rt.block_on(make_plan(&llm, "my cat", Detail::VeryDetailed, Some(b"x"))).unwrap();
-        assert_eq!(plan.detail, Detail::VeryDetailed);
+        let plan = rt.block_on(make_plan(&llm, "my cat", Age::Adult, Some(b"x"))).unwrap();
+        assert_eq!(plan.age, Age::Adult);
         let prompts = rt.block_on(make_prompts(&llm, &plan));
         let seen = fake.requests();
-        assert!(seen[0].text().contains("very detailed"));
+        assert!(seen[0].text().contains("intricate"));
         let ask = seen[1].text();
-        assert!(ask.contains("very detailed") && ask.contains("ginger tabby cat with a white chest"), "{ask}");
-        assert!(prompts.iter().all(|p| p.contains("ginger tabby cat") && p.contains(Detail::VeryDetailed.words())));
+        assert!(ask.contains("intricate") && ask.contains("ginger tabby cat with a white chest"), "{ask}");
+        assert!(prompts.iter().all(|p| p.contains("ginger tabby cat") && p.contains(Age::Adult.words().as_str())));
+    }
+
+    fn everything_sent_at(age: Age) -> String {
+        let (fake, llm) = llm_returning(vec![
+            GOOD.into(),
+            r#"{"prompts":["a fox","a owl","a deer","a hare"]}"#.into(),
+        ]);
+        let rt = crate::net::runtime();
+        let plan = rt.block_on(make_plan(&llm, "woodland animals", age, None)).unwrap();
+        let prompts = rt.block_on(make_prompts(&llm, &plan));
+        let mut all: String = fake.requests().iter().map(|r| r.text()).collect::<Vec<_>>().join("\n");
+        all.push_str(&prompts.join("\n"));
+        all.to_lowercase()
+    }
+
+    #[test]
+    fn teen_and_adult_requests_carry_no_babyish_wording() {
+        for age in [Age::Teen, Age::Adult] {
+            let all = everything_sent_at(age);
+            for banned in ["simple", "aged 2 to 10", "for children", "cute"] {
+                assert!(!all.contains(banned), "{age:?} contains {banned}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_three_year_old_gets_big_simple_shapes() {
+        let all = everything_sent_at(Age::Years(3));
+        assert!(all.matches("big simple shapes").count() >= 3, "{all}");
+        assert!(!all.contains("aged 2 to 10") && !all.contains("for children"));
+    }
+
+    #[test]
+    fn the_safety_rules_stay_in_the_system_messages_and_the_block_list_holds_at_every_age() {
+        for i in 0..Age::COUNT {
+            let age = Age::from_index(i);
+            let system = plan_system(age).to_lowercase();
+            assert!(system.contains("violence") && system.contains("nudity"), "{age:?}");
+            let raw = r#"{"safe":true,"ideas":["a gun fight","a happy dog"]}"#;
+            let p = parse_plan(raw, "x", age).unwrap();
+            assert!(p.ideas.iter().all(|i| !i.contains("gun")));
+            let p = parse_prompts(r#"{"prompts":["a gun","b","c","d"]}"#, &ideas(), age).unwrap();
+            assert!(p[0].starts_with("a."));
+        }
     }
 }

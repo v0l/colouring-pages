@@ -495,12 +495,12 @@ pub mod tests {
 
     #[test]
     fn the_level_is_stored_with_the_set_and_reused_by_a_redraw_after_a_restart() {
-        use crate::detail::Detail;
+        use crate::detail::Age;
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
         let (_fake, llm) = thinker();
         let jobs = Jobs::new(store.clone(), || {});
-        let look = Look { detail: Detail::VeryDetailed, close: true };
+        let look = Look { age: Age::Adult, close: true };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let pens = Arc::new(LookSeen { seen: seen.clone() });
         let id = jobs.start(llm, pens.clone(), Paper::A4, "cats".into(), None, look).unwrap();

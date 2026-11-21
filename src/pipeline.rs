@@ -38,9 +38,9 @@ pub async fn draw_page(
     look: Look,
 ) -> Result<GrayImage, String> {
     let (width, height) = generation_size(aspect(paper));
-    let job = Job { prompt: prompt.to_string(), negative: style::negative(look.detail), width, height, seed, reference, look };
+    let job = Job { prompt: prompt.to_string(), negative: style::negative(look.age), width, height, seed, reference, look };
     let png = backend.generate(&job).await?;
-    make_page(&png, paper, look.detail)
+    make_page(&png, paper, look.detail())
 }
 
 const EMPTY_PAGE: &str = "the page came out empty";
@@ -66,7 +66,7 @@ async fn draw_page_retrying(
 
 pub async fn run(llm: Llm, backend: Arc<dyn ImageBackend>, paper: Paper, request: String, reference: Reference, look: Look, sink: Sink) {
     sink(Event::Planning);
-    let plan = match make_plan(&llm, &request, look.detail, reference.as_ref().map(|r| r.as_slice())).await {
+    let plan = match make_plan(&llm, &request, look.age, reference.as_ref().map(|r| r.as_slice())).await {
         Ok(p) => p,
         Err(PlanError::Refused(why)) => return sink(Event::Refused(why)),
         Err(e) => return sink(Event::Failed(format!("could not make a plan: {e}"))),
@@ -110,7 +110,7 @@ pub async fn redraw(backend: Arc<dyn ImageBackend>, paper: Paper, index: usize, 
 mod tests {
     use super::*;
     use crate::fake::{Reply, serve};
-    use crate::detail::Detail;
+    use crate::detail::Age;
     use crate::style::STYLE_SUFFIX;
     use async_trait::async_trait;
     use serde_json::json;
@@ -182,7 +182,7 @@ mod tests {
         let jobs = backend.jobs.lock().unwrap();
         assert_eq!(jobs.len(), 4);
         assert!(jobs.iter().all(|j| j.prompt.ends_with(STYLE_SUFFIX) && !j.negative.is_empty()));
-        assert!(jobs.iter().all(|j| j.look == Look::default() && j.negative == style::negative(Detail::Medium)));
+        assert!(jobs.iter().all(|j| j.look == Look::default() && j.negative == style::negative(Age::default())));
         let mut seeds: Vec<_> = jobs.iter().map(|j| j.seed).collect();
         seeds.dedup();
         assert_eq!(seeds.len(), 4);
@@ -248,7 +248,7 @@ mod tests {
     fn an_empty_page_is_drawn_again_with_a_new_seed() {
         let backend = BlankFirst { jobs: Mutex::new(Vec::new()) };
         let page = net::runtime()
-            .block_on(draw_page_retrying(&backend, &style::finish("a cat", Detail::Medium), Paper::A4, 10, None, Look::default()))
+            .block_on(draw_page_retrying(&backend, &style::finish("a cat", Age::default()), Paper::A4, 10, None, Look::default()))
             .unwrap();
         assert!(crate::clean::ink_ratio(&page) > 0.001);
         let jobs = backend.jobs.lock().unwrap();
@@ -260,7 +260,7 @@ mod tests {
     fn redrawing_one_page_uses_the_same_prompt_with_a_new_seed() {
         let backend = Arc::new(Grey { jobs: Mutex::new(Vec::new()), fail_on: None });
         let (sink, log) = collect();
-        let prompt = style::finish("cat sofa", Detail::Medium);
+        let prompt = style::finish("cat sofa", Age::default());
         net::runtime().block_on(redraw(backend.clone(), Paper::A4, 2, prompt.clone(), None, Look::default(), sink));
         let events = log.lock().unwrap().clone();
         assert!(matches!(&events[0], Event::Page(2, _)));
@@ -272,11 +272,11 @@ mod tests {
         let (_fake, llm) = llm();
         let backend = Arc::new(Grey { jobs: Mutex::new(Vec::new()), fail_on: None });
         let (sink, _log) = collect();
-        let look = Look { detail: Detail::VeryDetailed, close: true };
+        let look = Look { age: Age::Adult, close: true };
         net::runtime().block_on(run(llm, backend.clone(), Paper::A4, "cats".into(), Some(Arc::new(vec![1])), look, sink));
         let jobs = backend.jobs.lock().unwrap();
         assert_eq!(jobs.len(), 4);
-        assert!(jobs.iter().all(|j| j.look == look && j.prompt.contains(Detail::VeryDetailed.words())));
+        assert!(jobs.iter().all(|j| j.look == look && j.prompt.contains(Age::Adult.words().as_str())));
         assert!(jobs.iter().all(|j| !j.negative.contains("tiny details")));
     }
 
@@ -284,9 +284,9 @@ mod tests {
     fn a_redraw_keeps_the_reference_and_the_look() {
         let backend = Arc::new(Grey { jobs: Mutex::new(Vec::new()), fail_on: None });
         let (sink, _log) = collect();
-        let look = Look { detail: Detail::Simple, close: false };
+        let look = Look { age: Age::Years(4), close: false };
         let reference: Reference = Some(Arc::new(vec![7]));
-        net::runtime().block_on(redraw(backend.clone(), Paper::A4, 0, style::finish("cat", Detail::Simple), reference.clone(), look, sink));
+        net::runtime().block_on(redraw(backend.clone(), Paper::A4, 0, style::finish("cat", Age::Years(4)), reference.clone(), look, sink));
         let jobs = backend.jobs.lock().unwrap();
         assert_eq!(jobs[0].look, look);
         assert_eq!(jobs[0].reference, reference);
