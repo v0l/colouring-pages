@@ -985,7 +985,7 @@ impl App {
         let g = egui_bench::text::lay(ui, egui_bench::text::caps(&format!("who is it for: {}", current.label()), legend_font(13.0), LEGEND, 1.5), total);
         ui.painter().galley(pos2(caption.center().x - g.size().x / 2.0, caption.top()), g, LEGEND);
         let track = Rect::from_min_size(pos2(left, top.y + 26.0), vec2(total, 40.0));
-        let resp = ui.interact(track, egui::Id::new("age_slider"), Sense::click_and_drag());
+        let resp = ui.interact(track, egui::Id::unique("age_slider"), Sense::click_and_drag());
         let steps = Age::COUNT - 1;
         let x_of = |i: usize| track.left() + 10.0 + (track.width() - 20.0) * i as f32 / steps as f32;
         if let Some(p) = resp.interact_pointer_pos() {
