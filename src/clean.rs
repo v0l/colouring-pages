@@ -131,8 +131,27 @@ fn remove_regions(img: &mut GrayImage, ink: bool, smaller_than: usize) {
     }
 }
 
+pub fn ink_level(gray: &GrayImage) -> u8 {
+    let mut hist = [0u64; 256];
+    for p in gray.pixels() {
+        hist[p.0[0] as usize] += 1;
+    }
+    let half = (gray.width() as u64 * gray.height() as u64) / 2;
+    let mut seen = 0;
+    let mut background = 255u8;
+    for (v, c) in hist.iter().enumerate() {
+        seen += c;
+        if seen >= half {
+            background = v as u8;
+            break;
+        }
+    }
+    let faint_lines = (background as u32 * 3 / 4) as u8;
+    otsu(gray).max(faint_lines)
+}
+
 pub fn clean(source: &GrayImage, detail: Detail) -> GrayImage {
-    let mut img = threshold(source, otsu(source));
+    let mut img = threshold(source, ink_level(source));
     let area = (img.width() * img.height()) as f32;
     let speck = (((area / 1_000_000.0) * 30.0 * detail.speck()) as usize).max(2);
     remove_regions(&mut img, true, speck);
@@ -324,6 +343,32 @@ mod tests {
         assert!((200..260).all(|x| fine.get_pixel(x, 800).0[0] == 0));
         let bold = clean(&img, Detail::VerySimple);
         assert!(bold.pixels().all(|p| p.0[0] == 255));
+    }
+
+    #[test]
+    fn faint_thin_lines_survive_at_every_level() {
+        let mut img = GrayImage::from_pixel(912, 1280, Luma([250]));
+        for x in 100..800u32 {
+            for y in 300..302u32 {
+                img.put_pixel(x, y, Luma([185]));
+            }
+        }
+        for y in 400..1100u32 {
+            img.put_pixel(200, y, Luma([185]));
+            img.put_pixel(201, y, Luma([185]));
+        }
+        for x in 500..700u32 {
+            for y in 900..1000u32 {
+                img.put_pixel(x, y, Luma([20]));
+            }
+        }
+        for detail in Detail::ALL {
+            let out = clean(&img, detail);
+            let kept = (100..800u32).filter(|x| out.get_pixel(*x, 300).0[0] == 0 || out.get_pixel(*x, 301).0[0] == 0).count();
+            assert!(kept >= 690, "{detail:?} kept {kept} of 700 horizontal line pixels");
+            let kept = (400..1100u32).filter(|y| out.get_pixel(200, *y).0[0] == 0 || out.get_pixel(201, *y).0[0] == 0).count();
+            assert!(kept >= 690, "{detail:?} kept {kept} of 700 vertical line pixels");
+        }
     }
 
     #[test]
